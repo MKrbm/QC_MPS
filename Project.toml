@@ -1,0 +1,4 @@
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+PkgTemplates = "14b8a8f1-9102-5b29-a752-f990bacb7fe1"
+iso_emb = "30aa104c-aaec-4a2e-86d7-96ac13a26d92"
