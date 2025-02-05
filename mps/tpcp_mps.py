@@ -95,6 +95,7 @@ class MPSTPCP(nn.Module):
         
         """
 
+        X = X / torch.norm(X, dim=-1).unsqueeze(-1)
         batch_size = X.shape[0]
         self.rhos = []
         rho1 = self.get_rho(X[:, 0])

@@ -293,7 +293,7 @@ def cayley_adam_update(
     # Note: in code, 'step' is the 1-based iteration index.
     # So we use (step) in place of (k+1).
     v_hat = v_new / (1.0 - beta2**step)
-    r = (1.0 - beta1**step) * torch.sqrt(v_hat) + eps
+    r = (1.0 - beta1**step) * torch.sqrt(v_hat + eps)
 
     # ----------------------------------------------------------
     # (8) W_hat = M_{k+1} X_k^T - (1/2) X_k (X_k^T M_{k+1} X_k^T)
