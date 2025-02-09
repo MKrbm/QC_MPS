@@ -39,7 +39,8 @@ class uMPS(nn.Module):
         normalize: bool = True,
         optimize: str = "auto",
         device: torch.device = torch.device("cuda"),
-        dtype: torch.dtype = torch.float64
+        dtype: torch.dtype = torch.float64,
+        init_with: torch.Tensor | None = None
     ):
         super().__init__()
         # super().__init__(*args, **kwargs)
@@ -166,30 +167,72 @@ class uMPS(nn.Module):
                 self.tensor_shapes[i] = (batch_size, d)
         
         self.set_path(batch_size=batch_size, optimize=optimize)
-        self.initialize_MPS()
+        self.params = nn.ParameterList([nn.Parameter(torch.empty(self.chi, self.chi, self.chi, self.chi)) for _ in range(self.layers * (self.N - 1))])
+        self.initialize_MPS(init_with=init_with)
         self._discriminator = self._get_discriminator()
         
 
 
-    def initialize_MPS(self, identity: bool = False):
+    def initialize_MPS(self, init_with: torch.Tensor | None = None):
+        """
+        Initialize or overwrite the parameters of the MPS tensors.
+
+        Args:
+            init_with (torch.Tensor, optional): Tensor containing unitary matrices to initialize MPS.
+                                               Must be unitary if provided.
+        """
         if self.is_initialized:
             print("MPS is already initialized")
             return
-        if self.dtype == torch.float64:
-            MPS_unitaries = [ortho_group.rvs(self.chi ** 2).reshape((self.chi,) * 4) for _ in range((self.N - 1) * self.layers)]
-        elif self.dtype == torch.complex128:
-            MPS_unitaries = [unitary_group.rvs(self.chi ** 2).reshape((self.chi,) * 4) for _ in range((self.N - 1) * self.layers)]
-        else:
-            raise ValueError("Unsupported dtype")
-        
-        if self.identity:
-            MPS_unitaries = [torch.eye(self.chi ** 2).reshape((self.chi,) * 4) for _ in range((self.N - 1) * self.layers)]
 
-        self.params = nn.ParameterList([
-            nn.Parameter(torch.tensor(unitary, device=self.device, dtype=self.dtype)) for unitary in MPS_unitaries
-        ])
+        if init_with is not None:
+            if not self.is_unitary(init_with):
+                raise ValueError("The provided tensor is not unitary.")
+            if init_with.shape != (self.chi ** 2, self.chi ** 2):
+                raise ValueError(f"init_with tensor must have shape ({self.chi ** 2}, {self.chi ** 2})")
+            # Overwrite the elements of self.params with init_with
+            for i in range(len(self.params)):
+                self.params[i].data.copy_(init_with.clone().reshape(self.params[i].shape))
+        else:
+            if self.dtype == torch.float64:
+                MPS_unitaries = [
+                    ortho_group.rvs(self.chi ** 2).reshape((self.chi,) * 4)
+                    for _ in range((self.N - 1) * self.layers)
+                ]
+            elif self.dtype == torch.complex128:
+                MPS_unitaries = [
+                    unitary_group.rvs(self.chi ** 2).reshape((self.chi,) * 4)
+                    for _ in range((self.N - 1) * self.layers)
+                ]
+            else:
+                raise ValueError("Unsupported dtype")
+
+            if self.identity:
+                MPS_unitaries = [torch.eye(self.chi ** 2).reshape((self.chi,) * 4) for _ in range((self.N - 1) * self.layers)]
+
+            for i, unitary in enumerate(MPS_unitaries):
+                self.params[i] = nn.Parameter(
+                    torch.tensor(unitary).to(device=self.device, dtype=self.dtype).clone().detach()
+                )
+
         self.is_initialized = True
-        print("Initialized MPS unitaries")
+        print("Initialized MPS params")
+
+    @staticmethod
+    def is_unitary(tensor: torch.Tensor) -> bool:
+        """
+        Check if the given tensor is unitary.
+
+        Args:
+            tensor (torch.Tensor): Tensor to check.
+
+        Returns:
+            bool: True if the tensor is unitary, False otherwise.
+        """
+        if tensor.ndim != 2:
+            return False
+        identity = torch.eye(tensor.size(0), dtype=tensor.dtype, device=tensor.device)
+        return torch.allclose(tensor.conj().transpose(-2, -1) @ tensor, identity, atol=1e-6)
 
     def set_path(self, optimize: str = 'greedy', batch_size: int = 100):
         if self.path is not None:

@@ -9,32 +9,73 @@ from scipy.stats import unitary_group, ortho_group
 
 class kraus_operators(nn.Module):
 
-    K : int # number of kraus operators.
-    d : int = 2
-    n : int = 2 # number of qubits it acts on.
-    L : int # number of kraus_operator layers.
+    K: int  # number of kraus operators.
+    d: int = 2
+    n: int = 2  # number of qubits it acts on.
+    L: int  # number of kraus_operator layers.
 
-    def __init__(self, K, L):
+    def __init__(self, K, L, with_identity: bool = False, init_with: torch.Tensor | None = None):
         super().__init__()
         self.K = K
         self.L = L
+        self.with_identity = with_identity
 
-        self.kraus_ops = []
-        self.act_size = self.d**self.n
-        for l in range(self.L):
-            kraus_ops = self.random_tpcp_map_torch(self.act_size, self.K)
-            self.kraus_ops.append(nn.Parameter(torch.stack(kraus_ops).reshape(self.K * self.act_size, self.act_size)))
+        self.act_size = self.d ** self.n
+        self.kraus_ops = nn.ParameterList(
+            [nn.Parameter(torch.zeros(self.K * self.act_size, self.act_size, dtype=torch.float64)) for _ in range(self.L)]
+        )
+        self.init_params(init_with=init_with)
 
-        self.kraus_ops = nn.ParameterList(self.kraus_ops)
-    
     def __getitem__(self, idx):
         return self.kraus_ops[idx]
 
+    def init_params(self, init_with: torch.Tensor | None = None):
+        """
+        Initialize or overwrite the parameters of the Kraus operators.
+
+        Args:
+            init_with (torch.Tensor, optional): Tensor to initialize Kraus operators with.
+                                                Must represent a TPCP map if provided.
+        """
+        if init_with is not None:
+            if not self.is_tpcp(init_with):
+                raise ValueError("The provided tensor does not represent a TPCP map.")
+            if init_with.shape != (self.K * self.act_size, self.act_size):
+                raise ValueError(f"init_with tensor must have shape ({self.K * self.act_size}, {self.act_size})")
+            for l in range(self.L):
+                self.kraus_ops[l].data = init_with.clone().reshape(self.K * self.act_size, self.act_size)
+        else:
+            for l in range(self.L):
+                kraus_ops = self.random_tpcp_map_torch(
+                    self.act_size, self.K, self.with_identity
+                )
+                self.kraus_ops[l].data = kraus_ops.reshape(self.K * self.act_size, self.act_size)
 
     @staticmethod
-    def random_tpcp_map_torch(d, k, 
-                            dtype=torch.float64,
-                            device='cpu'):
+    def is_tpcp(kraus_tensor: torch.Tensor) -> bool:
+        """
+        Check if the given Kraus tensor represents a TPCP map.
+
+        Args:
+            kraus_tensor (torch.Tensor): Tensor containing Kraus operators
+                                         with shape (K*d, d).
+
+        Returns:
+            bool: True if the tensor is TPCP, False otherwise.
+        """
+        K, d_squared = kraus_tensor.shape
+        d = int(np.sqrt(d_squared))
+        if d * d != d_squared:
+            return False  # d_squared is not a perfect square
+        kraus = kraus_tensor.reshape(K, d, d)
+        identity = torch.eye(d, dtype=kraus.dtype, device=kraus.device)
+        sum_kd = torch.stack([K_i.conj().transpose(-1, -2) @ K_i for K_i in kraus]).sum(dim=0)
+        return torch.allclose(sum_kd, identity, atol=1e-6)
+
+    @staticmethod
+    def random_tpcp_map_torch(
+        d, k, with_identity=False, dtype=torch.float64, device="cpu"
+    ) -> torch.Tensor:
         """
         Generate a random TPCP map in d-dimensional Hilbert space
         with k Kraus operators using the isometry method, in PyTorch.
@@ -42,18 +83,22 @@ class kraus_operators(nn.Module):
         Args:
             d (int): Hilbert space dimension.
             k (int): Number of Kraus operators.
+            with_identity (bool): Whether to include the identity operator.
             dtype (torch.dtype): Complex dtype to use (complex64 or complex128).
             device (str or torch.device): Device for tensors (e.g. 'cpu' or 'cuda').
 
         Returns:
-            A list of k Kraus operators [K1, K2, ..., Kk],
-            each a (d x d) complex PyTorch tensor that satisfies
-            sum_i K_i^\dagger K_i = I_d.
+            A tensor representing k Kraus operators stacked together with shape (k*d, d).
         """
+        if with_identity:
+            identity = torch.eye(d, dtype=dtype, device=device)
+            Kraus_ops = [identity for _ in range(k)]
+            return torch.stack(Kraus_ops).reshape(k * d, d)
+
         # 1) Create a random complex matrix of shape (k*d, d):
         #    We'll sample real and imaginary parts from a normal distribution.
-        real_part = torch.randn(k*d, d, dtype=torch.float64, device=device)
-        imag_part = torch.randn(k*d, d, dtype=torch.float64, device=device)
+        real_part = torch.randn(k * d, d, dtype=dtype, device=device)
+        imag_part = torch.randn(k * d, d, dtype=dtype, device=device)
         M = real_part + 1j * imag_part
         M = M.to(dtype)  # ensure complex dtype
 
@@ -65,15 +110,14 @@ class kraus_operators(nn.Module):
         Kraus_ops = []
         for i in range(k):
             # Slice rows [i*d : (i+1)*d] to form K_i
-            K_i = Q[i*d : (i+1)*d, :]
+            K_i = Q[i * d : (i + 1) * d, :]
             Kraus_ops.append(K_i)
 
-        return Kraus_ops
-
+        return torch.stack(Kraus_ops).reshape(k * d, d)
 
 
 class MPSTPCP(nn.Module):
-    def __init__(self, N, K, d=2):
+    def __init__(self, N, K, d=2, with_identity: bool = False):
         """
         Args:
             N (int): Number of density matrices (batch size).
@@ -86,15 +130,19 @@ class MPSTPCP(nn.Module):
         self.d = d  # single-qubit dimension (d=2)
 
         self.L = N - 1
-        self.kraus_ops = kraus_operators(K, L = self.L)
-    
+        self.kraus_ops = kraus_operators(K, L=self.L, with_identity=with_identity)
+
     def forward(self, X):
         """
         Args:
             X (tensor): shape (batch_size, N, 2), where N is the number of qubits (or pixels).
-        
+
         """
 
+        assert X.shape[1:] == (
+            self.N,
+            2,
+        ), f"Expected X to have shape (batch_size, {self.N}, 2), but got {X.shape}"
         X = X / torch.norm(X, dim=-1).unsqueeze(-1)
         batch_size = X.shape[0]
         self.rhos = []
@@ -104,14 +152,16 @@ class MPSTPCP(nn.Module):
 
         rho = init_rho
         for i in range(self.L):
-            kraus_ops = self.kraus_ops[i].reshape(self.K, self.kraus_ops.act_size, self.kraus_ops.act_size)
+            kraus_ops = self.kraus_ops[i].reshape(
+                self.K, self.kraus_ops.act_size, self.kraus_ops.act_size
+            )
             rho = self.forward_layer(rho, kraus_ops)
             self.rhos.append(rho.detach().clone())
             # print(torch.trace(rho[0]))
 
             if i < self.N - 2:
                 rho = self.partial(rho, 0)
-                next_rho = self.get_rho(X[:, i+2])
+                next_rho = self.get_rho(X[:, i + 2])
                 rho = self.tensor_product(rho, next_rho)
 
         res = self.partial(rho, 0)[..., 0, 0]
@@ -122,8 +172,9 @@ class MPSTPCP(nn.Module):
     def tensor_product(rho1, rho2):
         batch_size = rho1.shape[0]
         d = rho1.shape[1]
-        return torch.einsum("bij,bkl->bikjl", rho1, rho2).reshape(batch_size, d**2, d**2)
-    
+        return torch.einsum("bij,bkl->bikjl", rho1, rho2).reshape(
+            batch_size, d**2, d**2
+        )
 
     @staticmethod
     def get_rho(x):
@@ -133,13 +184,14 @@ class MPSTPCP(nn.Module):
 
         return torch.einsum("bi,bj->bij", x, x.conj())
 
-
-        
-
     def forward_layer(self, rho, kraus_ops):
 
         batch_size = rho.shape[0]
-        assert rho.shape == (batch_size, self.d ** 2, self.d ** 2), "rho must be a tensor of shape (batch_size, d^2, d^2)"
+        assert rho.shape == (
+            batch_size,
+            self.d**2,
+            self.d**2,
+        ), "rho must be a tensor of shape (batch_size, d^2, d^2)"
 
         #  rho shape  => (N, d, d)
         #  kraus_ops => (K, d, d)
@@ -152,18 +204,17 @@ class MPSTPCP(nn.Module):
         # When we do matmul, PyTorch broadcasts (K,1,d,d) with (1,N,d,d) => (K,N,d,d).
         kraus_ops_dagger = kraus_ops.conj().transpose(-1, -2)  # K_i^\dagger
 
-        partial = kraus_ops.unsqueeze(1) @ rho.unsqueeze(0)      # => (K, N, d, d)
-        out = partial @ kraus_ops_dagger.unsqueeze(1)            # => (K, N, d, d)
+        partial = kraus_ops.unsqueeze(1) @ rho.unsqueeze(0)  # => (K, N, d, d)
+        out = partial @ kraus_ops_dagger.unsqueeze(1)  # => (K, N, d, d)
 
         # Now sum over the Kraus index K to get shape (N, d, d)
         new_rho = out.sum(dim=0)  # sum over the 0th dim => (N, d, d)
 
-
         return new_rho
-    
+
     def partial(self, rho, site):
         """
-        Perform a partial trace over one qubit (site=0 or site=1) 
+        Perform a partial trace over one qubit (site=0 or site=1)
         for a batch of two-qubit states.
 
         - rho.shape = (N, d^2, d^2)   # e.g. d^2=4 for 2 qubits
@@ -174,9 +225,11 @@ class MPSTPCP(nn.Module):
                  (Here, d=2.)
         """
         batch_size = rho.shape[0]
-        assert rho.shape == (batch_size, self.d**2, self.d**2), (
-            f"rho must be a tensor of shape (batch_size, {self.d**2}, {self.d**2})"
-        )
+        assert rho.shape == (
+            batch_size,
+            self.d**2,
+            self.d**2,
+        ), f"rho must be a tensor of shape (batch_size, {self.d**2}, {self.d**2})"
 
         # Reshape => (N, d, d, d, d)
         # Indices: rho[n, a, c, b, d] = element ((a,c),(b,d))
@@ -187,18 +240,15 @@ class MPSTPCP(nn.Module):
             # Using einsum, indices to keep: n, c, d
             # We want: \sum_a rho[n, a, c, a, d]
             # => (N, d, d)
-            reduced = torch.einsum('n a c a d -> n c d', rho_reshaped)
+            reduced = torch.einsum("n a c a d -> n c d", rho_reshaped)
 
         elif site == 1:
             # Trace out the second qubit => sum over c=d
             # We want: \sum_c rho[n, a, c, b, c]
             # => (N, d, d)
-            reduced = torch.einsum('n a c b c -> n a b', rho_reshaped)
+            reduced = torch.einsum("n a c b c -> n a b", rho_reshaped)
 
         else:
             raise ValueError("site must be 0 or 1 for a 2-qubit system.")
 
         return reduced
-
-
-
