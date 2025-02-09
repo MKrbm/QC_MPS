@@ -6,7 +6,7 @@ import copy
 from pathlib import Path
 from scipy.stats import unitary_group, ortho_group
 
-from opt_einsum.helpers import build_views
+from opt_einsum.testing import build_views
 from opt_einsum.contract import PathInfo, ContractExpression
 
 
@@ -181,27 +181,29 @@ class uMPS(nn.Module):
             init_with (torch.Tensor, optional): Tensor containing unitary matrices to initialize MPS.
                                                Must be unitary if provided.
         """
-        if self.is_initialized:
-            print("MPS is already initialized")
-            return
+        # if self.is_initialized:
+        #     print("MPS is already initialized")
+        #     return
 
         if init_with is not None:
-            if not self.is_unitary(init_with):
-                raise ValueError("The provided tensor is not unitary.")
-            if init_with.shape != (self.chi ** 2, self.chi ** 2):
-                raise ValueError(f"init_with tensor must have shape ({self.chi ** 2}, {self.chi ** 2})")
-            # Overwrite the elements of self.params with init_with
-            for i in range(len(self.params)):
-                self.params[i].data.copy_(init_with.clone().reshape(self.params[i].shape))
+            if init_with.shape != (len(self.params), self.chi, self.chi, self.chi, self.chi):
+                raise ValueError(f"init_with tensor must have shape ({len(self.params)}, {self.chi}, {self.chi}, {self.chi}, {self.chi})")
+            for i, param in enumerate(self.params):
+                u = init_with[i].reshape(self.chi ** 2, self.chi ** 2)
+                # Have to match to the unitary evolution of the input. Complex conjugate must be taken.
+                u = u.conj().T
+                if not self.is_unitary(u):
+                    raise ValueError("The provided tensor is not unitary.")
+                param.data[:] = u.reshape((self.chi,) * 4).clone()
         else:
             if self.dtype == torch.float64:
                 MPS_unitaries = [
-                    ortho_group.rvs(self.chi ** 2).reshape((self.chi,) * 4)
+                    torch.from_numpy(ortho_group.rvs(self.chi ** 2).reshape((self.chi,) * 4))
                     for _ in range((self.N - 1) * self.layers)
                 ]
             elif self.dtype == torch.complex128:
                 MPS_unitaries = [
-                    unitary_group.rvs(self.chi ** 2).reshape((self.chi,) * 4)
+                    torch.from_numpy(unitary_group.rvs(self.chi ** 2).reshape((self.chi,) * 4))
                     for _ in range((self.N - 1) * self.layers)
                 ]
             else:
@@ -212,7 +214,7 @@ class uMPS(nn.Module):
 
             for i, unitary in enumerate(MPS_unitaries):
                 self.params[i] = nn.Parameter(
-                    torch.tensor(unitary).to(device=self.device, dtype=self.dtype).clone().detach()
+                    unitary.clone().detach().to(device=self.device, dtype=self.dtype)
                 )
 
         self.is_initialized = True
@@ -263,21 +265,13 @@ class uMPS(nn.Module):
             ops[self.right_mps_inds[i]] = tensor.conj()
         return oe.contract_expression(self.estr, *ops, constants=self.left_mps_inds + self.right_mps_inds, optimize=self.path)
 
-    def forward(self, X: torch.Tensor, label: torch.Tensor | None = None):
-        X = X / torch.norm(X, dim=-1).unsqueeze(-1)
+    def forward(self, X: torch.Tensor, label: torch.Tensor | None = None, normalize: bool = True):
+        if normalize:
+            X = X / torch.norm(X, dim=-1).unsqueeze(-1)
 
         batch_size = X.shape[1]
         if X.ndim != 3 or X.shape[0] != self.N:
             raise ValueError("Input must be a tensor of shape (N, batch_size, 2)")
-
-        # if label is not None:
-        #     if label.ndim != 2:
-        #         raise ValueError("Label must be a tensor of shape (batch_size)")
-            
-        #     if batch_size != label.shape[0]:
-        #         raise ValueError("Batch size of label must be the same as the batch size of X")
-        
-
 
         batch = torch.empty(((self.N+1)*2, batch_size, 2), device=self.device, dtype=self.dtype)
         batch[:self.N, :, :] = X

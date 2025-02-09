@@ -1,5 +1,5 @@
+import torch # do not change the order of import. otherwise, it causes error at QR factorization.
 import opt_einsum as oe
-import torch
 from torch import nn
 import numpy as np
 import copy
@@ -18,18 +18,17 @@ class kraus_operators(nn.Module):
         super().__init__()
         self.K = K
         self.L = L
-        self.with_identity = with_identity
 
         self.act_size = self.d ** self.n
         self.kraus_ops = nn.ParameterList(
             [nn.Parameter(torch.zeros(self.K * self.act_size, self.act_size, dtype=torch.float64)) for _ in range(self.L)]
         )
-        self.init_params(init_with=init_with)
+        self.init_params(init_with=init_with, init_with_identity=with_identity)
 
     def __getitem__(self, idx):
         return self.kraus_ops[idx]
 
-    def init_params(self, init_with: torch.Tensor | None = None):
+    def init_params(self, init_with: torch.Tensor | None = None, init_with_identity: bool = False):
         """
         Initialize or overwrite the parameters of the Kraus operators.
 
@@ -38,18 +37,19 @@ class kraus_operators(nn.Module):
                                                 Must represent a TPCP map if provided.
         """
         if init_with is not None:
-            if not self.is_tpcp(init_with):
-                raise ValueError("The provided tensor does not represent a TPCP map.")
-            if init_with.shape != (self.K * self.act_size, self.act_size):
-                raise ValueError(f"init_with tensor must have shape ({self.K * self.act_size}, {self.act_size})")
+            if len(init_with) != len(self.kraus_ops):
+                print(f"init_with.shape: {len(init_with)}, self.kraus_ops.shape: {len(self.kraus_ops)}")
+                raise ValueError(f"init_with tensor must have shape {self.kraus_ops}")
             for l in range(self.L):
-                self.kraus_ops[l].data = init_with.clone().reshape(self.K * self.act_size, self.act_size)
+                if not self.is_tpcp(init_with[l]):
+                    raise ValueError("The provided tensor does not represent a TPCP map.")
+                self.kraus_ops[l].data[:] = init_with[l].clone()
         else:
             for l in range(self.L):
                 kraus_ops = self.random_tpcp_map_torch(
-                    self.act_size, self.K, self.with_identity
+                    self.act_size, self.K, init_with_identity
                 )
-                self.kraus_ops[l].data = kraus_ops.reshape(self.K * self.act_size, self.act_size)
+                self.kraus_ops[l].data[:] = kraus_ops.reshape(self.K * self.act_size, self.act_size)
 
     @staticmethod
     def is_tpcp(kraus_tensor: torch.Tensor) -> bool:
@@ -63,11 +63,8 @@ class kraus_operators(nn.Module):
         Returns:
             bool: True if the tensor is TPCP, False otherwise.
         """
-        K, d_squared = kraus_tensor.shape
-        d = int(np.sqrt(d_squared))
-        if d * d != d_squared:
-            return False  # d_squared is not a perfect square
-        kraus = kraus_tensor.reshape(K, d, d)
+        K, d, d = kraus_tensor.shape
+        kraus = kraus_tensor
         identity = torch.eye(d, dtype=kraus.dtype, device=kraus.device)
         sum_kd = torch.stack([K_i.conj().transpose(-1, -2) @ K_i for K_i in kraus]).sum(dim=0)
         return torch.allclose(sum_kd, identity, atol=1e-6)
@@ -97,15 +94,20 @@ class kraus_operators(nn.Module):
 
         # 1) Create a random complex matrix of shape (k*d, d):
         #    We'll sample real and imaginary parts from a normal distribution.
-        real_part = torch.randn(k * d, d, dtype=dtype, device=device)
-        imag_part = torch.randn(k * d, d, dtype=dtype, device=device)
-        M = real_part + 1j * imag_part
+        if dtype == torch.float64:  
+            real_part = torch.randn(k * d, d, dtype=torch.float64, device=device)
+            M = real_part
+
+
+        else:
+            real_part = torch.randn(k * d, d, dtype=torch.float64, device=device)
+            imag_part = torch.randn(k * d, d, dtype=torch.float64, device=device)
+            M = real_part + 1j * imag_part
         M = M.to(dtype)  # ensure complex dtype
 
         # 2) Perform a QR factorization to get an isometry Q
         #    (Q is (k*d, d), R is (d, d)).
         Q, R = torch.linalg.qr(M)
-
         # 3) Partition Q into k blocks, each of dimension (d, d).
         Kraus_ops = []
         for i in range(k):
@@ -132,7 +134,7 @@ class MPSTPCP(nn.Module):
         self.L = N - 1
         self.kraus_ops = kraus_operators(K, L=self.L, with_identity=with_identity)
 
-    def forward(self, X):
+    def forward(self, X, normalize: bool = True):
         """
         Args:
             X (tensor): shape (batch_size, N, 2), where N is the number of qubits (or pixels).
@@ -143,7 +145,8 @@ class MPSTPCP(nn.Module):
             self.N,
             2,
         ), f"Expected X to have shape (batch_size, {self.N}, 2), but got {X.shape}"
-        X = X / torch.norm(X, dim=-1).unsqueeze(-1)
+        if normalize:
+            X = X / torch.norm(X, dim=-1).unsqueeze(-1)
         batch_size = X.shape[0]
         self.rhos = []
         rho1 = self.get_rho(X[:, 0])
@@ -157,7 +160,6 @@ class MPSTPCP(nn.Module):
             )
             rho = self.forward_layer(rho, kraus_ops)
             self.rhos.append(rho.detach().clone())
-            # print(torch.trace(rho[0]))
 
             if i < self.N - 2:
                 rho = self.partial(rho, 0)
@@ -175,7 +177,10 @@ class MPSTPCP(nn.Module):
         return torch.einsum("bij,bkl->bikjl", rho1, rho2).reshape(
             batch_size, d**2, d**2
         )
-
+    @property
+    def params(self):
+        return list(self.kraus_ops.parameters())
+    
     @staticmethod
     def get_rho(x):
 
