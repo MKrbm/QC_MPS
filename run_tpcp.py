@@ -9,12 +9,15 @@ import torchvision.transforms as transforms
 import torch.utils.data
 import geoopt
 import matplotlib.pyplot as plt
+import time
 
 import sys
+
 # If your mps/ package is local, ensure it’s on sys.path or installed in editable mode:
 # sys.path.append("/path/to/your/project/root")
 
 from mps.tpcp_mps import MPSTPCP, ManifoldType
+
 
 ###############################################################################
 # MNIST dataset utilities
@@ -28,12 +31,14 @@ def filter_digits(dataset, allowed_digits=[0, 1]):
             indices.append(i)
     return torch.utils.data.Subset(dataset, indices)
 
+
 def filiter_single_channel(img: torch.Tensor) -> torch.Tensor:
     """
-    MNIST is loaded as shape [C, H, W]. 
+    MNIST is loaded as shape [C, H, W].
     Take only the first channel => shape [H, W].
     """
     return img[0, ...]
+
 
 def embedding_pixel(batch, label: int = 0):
     """
@@ -45,6 +50,7 @@ def embedding_pixel(batch, label: int = 0):
     x = torch.stack([x, 1 - x], dim=-1)
     x = x / torch.norm(x, dim=-1).unsqueeze(-1)
     return x
+
 
 ###############################################################################
 # Loss & Accuracy
@@ -65,6 +71,7 @@ def loss_batch(outputs, labels):
             print(prob, outputs[i], labels[i])
     return loss
 
+
 def calculate_accuracy(outputs, labels):
     """
     Threshold 0.5 => label 0 or 1. Compare to true labels.
@@ -72,6 +79,7 @@ def calculate_accuracy(outputs, labels):
     predictions = (outputs < 0.5).float()
     correct = (predictions == labels).float().sum()
     return correct / labels.numel()
+
 
 ###############################################################################
 # Training function
@@ -84,7 +92,7 @@ def train_tpcp_mnist(
     epochs: int,
     num_data: int | None = None,
     lr: float = 0.01,
-    log_steps: int = 100
+    log_steps: int = 100,
 ):
     """
     Fully train an MPSTPCP model on MNIST (digits 0 and 1) with the given parameters:
@@ -104,19 +112,18 @@ def train_tpcp_mnist(
     # 1) Prepare MNIST dataset
     # --------------------------
     img_size = 16
-    transform = transforms.Compose([
-        transforms.Resize(img_size),
-        transforms.ToTensor(),
-        transforms.Lambda(filiter_single_channel),
-        transforms.Lambda(embedding_pixel),
-        transforms.Lambda(lambda x: x.to(torch.float64))  # double precision
-    ])
+    transform = transforms.Compose(
+        [
+            transforms.Resize(img_size),
+            transforms.ToTensor(),
+            transforms.Lambda(filiter_single_channel),
+            transforms.Lambda(embedding_pixel),
+            transforms.Lambda(lambda x: x.to(torch.float64)),  # double precision
+        ]
+    )
 
     trainset = torchvision.datasets.MNIST(
-        root="data",
-        train=True,
-        download=True,
-        transform=transform
+        root="data", train=True, download=True, transform=transform
     )
     # Filter digits 0,1 only
     trainset = filter_digits(trainset, allowed_digits=[0, 1])
@@ -126,9 +133,7 @@ def train_tpcp_mnist(
         trainset = torch.utils.data.Subset(trainset, range(num_data))
 
     trainloader = torch.utils.data.DataLoader(
-        trainset,
-        batch_size=batch_size,
-        shuffle=True
+        trainset, batch_size=batch_size, shuffle=True
     )
 
     # --------------------------
@@ -140,7 +145,7 @@ def train_tpcp_mnist(
     manifold_map = {
         "EXACT": ManifoldType.EXACT,
         "FROBENIUS": ManifoldType.FROBENIUS,
-        "CANONICAL": ManifoldType.CANONICAL
+        "CANONICAL": ManifoldType.CANONICAL,
     }
     if manifold.upper() not in manifold_map:
         raise ValueError(f"Invalid manifold={manifold}. Use EXACT/FROBENIUS/CANONICAL.")
@@ -149,11 +154,10 @@ def train_tpcp_mnist(
         N=N,
         K=K,
         d=d,
-        with_identity=False,        # or True, depending on your preference
-        manifold=manifold_map[manifold.upper()]
+        with_identity=False,  # or True, depending on your preference
+        manifold=manifold_map[manifold.upper()],
     )
     model.train()
-
 
     # --------------------------
     # 3) Choose Riemannian optimizer
@@ -174,6 +178,7 @@ def train_tpcp_mnist(
         epoch_loss = 0.0
         epoch_acc = 0.0
         total_batches = 0
+        start_time = time.time()
 
         for step, (data, target) in enumerate(trainloader):
             # data => shape [bs, 256, 2]
@@ -190,17 +195,19 @@ def train_tpcp_mnist(
             batch_loss = loss_batch(outputs, target)
             batch_loss.backward()
             optimizer.step()
+            model.proj_stiefel(check_on_manifold=True, print_log=True)
 
             # Assert if the params are TPCP using geoopt's built-in function
-            for param in model.parameters():
-                p = param.data.clone().reshape(K, d**2, d**2)
-                I = torch.zeros(d**2, d**2, dtype=p.dtype, device=p.device)
-                for i in range(K):
-                    I += p[i].T @ p[i]
-                if not torch.allclose(I, torch.eye(d**2, dtype=p.dtype, device=p.device)):
-                    print(f"Parameter is not TPCP at step {step}.")
-                    print(p)
-                    raise ValueError("Parameter is not TPCP.")
+            # for param in model.parameters():
+            #     p = param.data.clone().reshape(K, d**2, d**2)
+            #     I = torch.zeros(d**2, d**2, dtype=p.dtype, device=p.device)
+            #     for i in range(K):
+            #         I += p[i].T @ p[i]
+            #     print(torch.linalg.norm(I - torch.eye(d**2, dtype=p.dtype, device=p.device)))
+            # if not torch.allclose(I, torch.eye(d**2, dtype=p.dtype, device=p.device)):
+            #     print(f"Parameter is not TPCP at step {step}.")
+            #     print(p)
+            #     raise ValueError("Parameter is not TPCP.")
 
             # Record batch-wise loss for plotting
             all_losses.append(batch_loss.item())
@@ -217,48 +224,81 @@ def train_tpcp_mnist(
 
             # Log loss values at each log_steps
             if (step + 1) % log_steps == 0:
-                print(f"Epoch {epoch+1:02}/{epochs:02} | Step {step+1:03}/{len(trainloader):03} | Loss: {batch_loss.item():.6f}")
+                elapsed_time = time.time() - start_time
+                print(
+                    f"Epoch {epoch+1:02}/{epochs:02} | Step {step+1:03}/{len(trainloader):03} | Loss: {batch_loss.item():.6f} | Elapsed Time: {elapsed_time:.2f}s"
+                )
+                start_time = time.time()
 
         # Print epoch-level stats
         if total_batches > 0:
             avg_loss = epoch_loss / total_batches
             avg_acc = epoch_acc / total_batches
         else:
-            avg_loss = float('nan')
-            avg_acc = float('nan')
+            avg_loss = float("nan")
+            avg_acc = float("nan")
 
-        print(f"Epoch {epoch+1:02}/{epochs:02} | Avg Loss: {avg_loss:.6f} | Avg Acc: {avg_acc:.2%}")
+        print(
+            f"Epoch {epoch+1:02}/{epochs:02} | Avg Loss: {avg_loss:.6f} | Avg Acc: {avg_acc:.2%}"
+        )
 
     return all_losses
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train TPCP MPS on MNIST (digits 0 & 1).")
+    parser = argparse.ArgumentParser(
+        description="Train TPCP MPS on MNIST (digits 0 & 1)."
+    )
 
-    parser.add_argument("--manifold", default="EXACT", 
-                        choices=["EXACT","FROBENIUS","CANONICAL"],
-                        help="Manifold type for Kraus ops (default EXACT).")
-    parser.add_argument("--optimizer", default="adam",
-                        choices=["adam","sgd"],
-                        help="Which Riemannian optimizer to use (default Adam).")
-    parser.add_argument("--K", type=int, default=1,
-                        help="# of Kraus operators per site (default 1).")
-    parser.add_argument("--batch_size", type=int, default=128,
-                        help="Batch size for training (default 128).")
-    parser.add_argument("--epochs", type=int, default=10,
-                        help="Number of epochs to train (default 10).")
-    parser.add_argument("--num_data", type=int, default=None,
-                        help="Limit the dataset to N examples (default: use entire dataset).")
-    parser.add_argument("--lr", type=float, default=0.01,
-                        help="Learning rate (default 0.01).")
+    parser.add_argument(
+        "--manifold",
+        default="EXACT",
+        choices=["EXACT", "FROBENIUS", "CANONICAL"],
+        help="Manifold type for Kraus ops (default EXACT).",
+    )
+    parser.add_argument(
+        "--optimizer",
+        default="adam",
+        choices=["adam", "sgd"],
+        help="Which Riemannian optimizer to use (default Adam).",
+    )
+    parser.add_argument(
+        "--K", type=int, default=1, help="# of Kraus operators per site (default 1)."
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=128,
+        help="Batch size for training (default 128).",
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=10, help="Number of epochs to train (default 10)."
+    )
+    parser.add_argument(
+        "--num_data",
+        type=int,
+        default=None,
+        help="Limit the dataset to N examples (default: use entire dataset).",
+    )
+    parser.add_argument(
+        "--lr", type=float, default=0.01, help="Learning rate (default 0.01)."
+    )
 
     # New: user-provided random seed
-    parser.add_argument("--seed", type=int, default=None,
-                        help="Random seed (default: None => system-based).")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed (default: None => system-based).",
+    )
 
     # New: log_steps argument
-    parser.add_argument("--log_steps", type=int, default=5,
-                        help="Number of steps between logging loss values (default 100).")
+    parser.add_argument(
+        "--log_steps",
+        type=int,
+        default=5,
+        help="Number of steps between logging loss values (default 100).",
+    )
 
     args = parser.parse_args()
 
@@ -281,17 +321,19 @@ def main():
         epochs=args.epochs,
         num_data=args.num_data,
         lr=args.lr,
-        log_steps=args.log_steps
+        log_steps=args.log_steps,
     )
 
     # --------------------------
     # Plot the loss curve
     # --------------------------
     plt.figure(figsize=(8, 5))
-    plt.plot(iteration_losses, label='Training Loss')
+    plt.plot(iteration_losses, label="Training Loss")
     plt.xlabel("Iteration (batch)")
     plt.ylabel("Loss")
-    plt.title(f"Loss Curve ({args.manifold} - {args.optimizer.upper()}, K={args.K}, seed={args.seed})")
+    plt.title(
+        f"Loss Curve ({args.manifold} - {args.optimizer.upper()}, K={args.K}, seed={args.seed})"
+    )
     plt.legend()
     plt.tight_layout()
     plt.show()

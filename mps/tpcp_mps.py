@@ -181,7 +181,7 @@ class MPSTPCP(nn.Module):
         if normalize:
             X = X / torch.norm(X, dim=-1).unsqueeze(-1)
 
-        # self.proj_stiefel(check_on_manifold=True)
+        # self.proj_stiefel(check_on_manifold=True, print_log=True)
 
         batch_size = X.shape[0]
         self.rhos = []
@@ -289,7 +289,7 @@ class MPSTPCP(nn.Module):
 
         return reduced
     
-    def proj_stiefel(self, check_on_manifold: bool = True):
+    def proj_stiefel(self, check_on_manifold: bool = True, print_log: bool = False):
         """
         Projects the Kraus operators onto the Stiefel manifold
         to ensure they remain valid quantum operations.
@@ -298,6 +298,8 @@ class MPSTPCP(nn.Module):
             if not self.check_point_on_manifold():
                 for param in self.kraus_ops.parameters():
                     param.data.copy_(self.manifold.projx(param.data))
+                if print_log:
+                    print("Projected Kraus operators onto the Stiefel manifold.")
         else:
             for param in self.kraus_ops.parameters():
                 param.data.copy_(self.manifold.projx(param.data))
