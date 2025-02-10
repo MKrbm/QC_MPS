@@ -212,7 +212,7 @@ class MPSTPCP(nn.Module):
             # assert torch.all(diag >= 0), "Some diagonal elements of rho_out are negative."
 
         self.rhos = torch.stack(self.rhos)
-        return rho_out[..., 0, 0].reshape(batch_size)
+        return rho_out[..., 0, 0]
 
     @staticmethod
     def tensor_product(rho1, rho2):

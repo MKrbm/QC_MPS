@@ -195,7 +195,8 @@ def train_tpcp_mnist(
             batch_loss = loss_batch(outputs, target)
             batch_loss.backward()
             optimizer.step()
-            model.proj_stiefel(check_on_manifold=True, print_log=True)
+            # model.proj_stiefel(check_on_manifold=True, print_log=True)
+            # print(f"Epoch {epoch+1}, Batch {total_batches}, Iteration {total_batches}: Batch Loss = {batch_loss.item():.4f}")
 
             # Assert if the params are TPCP using geoopt's built-in function
             # for param in model.parameters():
