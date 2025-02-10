@@ -39,7 +39,8 @@ class SimpleMPS(nn.Module):
         optimize: str = "auto",
         device: torch.device = torch.device("cpu"),
         dtype: torch.dtype = torch.float64,
-        seed: int = 0
+        seed: int = 0,
+        with_identity: bool = True  # Added parameter
     ):
         super().__init__()
         # super().__init__(*args, **kwargs)
@@ -60,7 +61,6 @@ class SimpleMPS(nn.Module):
         self.dtype = dtype
         self.is_initialized = False
         self.Sz = torch.tensor([[1, 0], [0, -1]], dtype=self.dtype, device=self.device)
-        self.mps = MPS(N, chi, d, True, device, dtype)
         self.ops = []
         self.left_qubit_inds = []
         self.left_mps_inds = []
@@ -112,6 +112,16 @@ class SimpleMPS(nn.Module):
         self.estr_mps = self.estr_mps[:-1]
         self.estr_mps += "->a{}".format(ll)
         self.set_path_mps()
+        self.init_mps(with_identity)  # Changed from initialize_MPS to init_mps
+    
+    def init_mps(self, with_identity: bool = True):
+        """
+        Initialize the MPS with optional identity initialization.
+        
+        Args:
+            with_identity (bool): If True, initialize MPS with identity matrices. Otherwise, use random initialization.
+        """
+        self.mps = MPS(self.N, self.chi, self.d, with_identity, self.device, self.dtype)
         self.initialize_MPS()
     
     def _get_path(self,einsum_str: str, d: int, optimize: str):
@@ -171,7 +181,8 @@ class HuMPS(nn.Module):
         optimize: str = "auto",
         device: torch.device = torch.device("cpu"),
         dtype: torch.dtype = torch.float64,
-        seed: int = 0
+        seed: int = 0,
+        with_identity: bool = True  # Added parameter
     ):
         super().__init__()
         # super().__init__(*args, **kwargs)
@@ -189,7 +200,7 @@ class HuMPS(nn.Module):
         self.device = device
         self.dtype = dtype
         self.is_initialized = False
-        self.umps = uMPS(N, chi, d, layers, True, device, dtype)
+        self.umps = uMPS(N, chi, d, layers, with_identity, device, dtype)  # Passed with_identity
         self.projection = torch.tensor([[1, 0], [0, 0]], dtype=self.dtype, device=self.device)
         projector0 = torch.tensor([[1, 0], [0, 0]], dtype=self.dtype, device=self.device)
         projector1 = torch.tensor([[0, 0], [0, 1]], dtype=self.dtype, device=self.device)
@@ -276,8 +287,8 @@ class HuMPS(nn.Module):
         
         self.estr_mps = estr[1:]
         self.tn_cnt = tn_cnt
-        
-                
+            
+            
 
         # Split the einsum with comma
         einsum_str_split = self.estr_mps.split(",")
@@ -523,6 +534,7 @@ class uMPS(nn.Module):
         for i in range(len(self.params)):
             p = self.params[i].data.reshape(self.chi ** 2, self.chi ** 2)
             assert torch.allclose(p @ p.T.conj(), torch.eye(self.chi ** 2, dtype=self.dtype, device=self.device))
+
 
 class MPS(nn.Module):
     def __init__(
