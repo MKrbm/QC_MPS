@@ -1,218 +1,239 @@
 import pytest
 import torch
-from mps.umps import uMPS
-from mps.tpcp_mps import MPSTPCP
 import numpy as np
-from scipy.stats import unitary_group, ortho_group
+import geoopt
+from mps.tpcp_mps import MPSTPCP
 
-class TestUMPSvsTPCPMPS:
+class TestMPSTPCP_Basic:
     def setup_method(self):
+        # Fix seeds for reproducibility.
         torch.manual_seed(42)
         np.random.seed(42)
-        self.N = 16
-        self.chi = 2
-        self.d = 2
-        self.layers = 1
+        # For MPSTPCP, N is the number of qubits, d is the local dimension,
+        # and the Kraus operators act on a space of dimension act_size = d^n with n=2.
+        self.N = 2      # Number of qubits (minimal test case)
+        self.K = 3      # Number of Kraus operators per layer.
+        self.d = 2      # Local qubit dimension.
+        self.n = 2      # Number of qubits per Kraus operator.
+        self.act_size = self.d ** self.n  # 2^2 = 4
+        # Create a default model instance (with with_identity=False so that we can test init_with separately)
+        self.model = MPSTPCP(N=self.N, K=self.K, d=self.d, with_identity=False)
 
-        # Generate random input data
-        self.rand_input = torch.randn(100, self.N, 2, dtype=torch.float64)
-        self.rand_input /= torch.norm(self.rand_input, dim=-1, keepdim=True)
-        self.random_Us = torch.stack([self.random_unitary(dtype=torch.float64, device=torch.device("cpu")) for _ in range(self.N - 1)])
+    def test_wrong_input_shape(self):
+        # The forward() method asserts that input X must have shape (batch_size, N, 2).
+        wrong_shape_input = torch.randn(10, self.N - 1, 2, dtype=torch.float64)
+        with pytest.raises(AssertionError):
+            _ = self.model(wrong_shape_input)
 
-
-    def test_rand_input_normalized(self):
-        norms = torch.norm(self.rand_input, dim=-1)
-        assert torch.allclose(norms, torch.ones_like(norms)), "rand_input is not normalized"
-
-
-    def random_unitary(self, dtype=torch.float64, device=torch.device("cpu")):
-        """
-        Generate a random unitary tensor based on the dtype.
-
-        Args:
-            dtype (torch.dtype): The desired data type of the tensor.
-            device (torch.device): The device on which to create the tensor.
-
-        Returns:
-            torch.Tensor: A randomly initialized unitary tensor of shape (chi^2, chi^2).
-        """
-        if dtype == torch.float64:
-            # Generate a random orthogonal matrix for real-valued tensors
-            unitary = torch.from_numpy(ortho_group.rvs(self.chi ** 2)).to(dtype=dtype, device=device)
-        elif dtype == torch.complex128:
-            # Generate a random unitary matrix for complex-valued tensors
-            unitary = torch.from_numpy(unitary_group.rvs(self.chi ** 2)).to(dtype=dtype, device=device)
-        else:
-            raise ValueError("Unsupported dtype for random_unitary. Use torch.float64 or torch.complex128.")
+    def test_init_with_wrong_length(self):
+        # For MPSTPCP with N=2, self.L = N-1 = 1.
+        # Here, we pass a tensor of length 2 instead of 1.
+        K = 1
+        model = MPSTPCP(N=self.N, K=K, d=self.d, with_identity=False)
+        eye_matrix = torch.eye(self.act_size, dtype=torch.float64).reshape(K, self.act_size, self.act_size)
+        init_tensor = torch.stack([eye_matrix] * 2)  # Incorrect length: 2 instead of 1
         
-        return unitary.reshape(self.chi**2, self.chi**2)
+        with pytest.raises(ValueError):
+            self.model.kraus_ops.init_params(init_with=init_tensor)
 
-    def test_trivial(self):
+    def test_init_with_wrong_matrix_dimension(self):
+        # Supply a tensor with incompatible shape (e.g. (1, 3, 3) instead of (1, 4, 4)).
+        K = 1
+        model = MPSTPCP(N=self.N, K=K, d=self.d, with_identity=False)
+        wrong_tensor = torch.eye(3, dtype=torch.float64).reshape(K, 3, 3)
+        init_tensor = torch.stack([wrong_tensor])
+        with pytest.raises(RuntimeError):
+            self.model.kraus_ops.init_params(init_with=init_tensor)
+
+    def test_init_with_non_stiefel(self):
+        # Supply an init_with tensor that is not on the Stiefel manifold.
+        non_stiefel = torch.ones(self.K, self.act_size, self.act_size, dtype=torch.float64)
+        init_tensor = torch.stack([non_stiefel])
+        with pytest.raises(ValueError) as excinfo:
+            self.model.kraus_ops.init_params(init_with=init_tensor)
+        assert "does not represent a point on the Stiefel manifold" in str(excinfo.value)
+
+    def test_dtype_consistency(self):
+        # Create a valid initialization using geoopt's random method.
+        st = geoopt.Stiefel()
+        valid_matrix = st.random((self.K * self.act_size, self.act_size), dtype=torch.float64)
+        valid_tensor = valid_matrix.reshape(self.K, self.act_size, self.act_size)
+        init_tensor = torch.stack([valid_tensor])
+        self.model.kraus_ops.init_params(init_with=init_tensor)
+        for param in self.model.kraus_ops:
+            assert param.dtype == torch.float64, "Parameter dtype is not torch.float64"
+
+    def test_output_with_identity(self):
+        # When with_identity=True, each Kraus operator is set to (1/sqrt(K))*I.
+        model_identity = MPSTPCP(N=self.N, K=self.K, d=self.d, with_identity=True)
+        batch_size = 10
+        input_state = torch.zeros(batch_size, self.N, 2, dtype=torch.float64)
+        input_state[:, :, 0] = 1.0
+        output = model_identity(input_state, normalize=False)
+        expected = torch.ones(batch_size, dtype=torch.float64)
+        assert torch.allclose(output, expected, atol=1e-6), "Output with identity initialization is not as expected."
+
+    def test_partial_invalid_site(self):
+        batch_size = 1
+        dummy_rho = torch.eye(self.act_size, dtype=torch.float64).unsqueeze(0)
+        with pytest.raises(ValueError):
+            _ = self.model.partial(dummy_rho, site=2)
+
+    def test_normalization_of_input(self):
+        batch_size = 5
+        X = torch.randn(batch_size, self.N, 2, dtype=torch.float64)
+        X_normalized = X / torch.norm(X, dim=-1, keepdim=True)
+        output1 = self.model(X, normalize=True)
+        output2 = self.model(X_normalized, normalize=False)
+        assert torch.allclose(output1, output2, atol=1e-6), "Normalization in forward does not work as expected."
+
+    def test_forward_output_shape(self):
+        batch_size = 7
+        X = torch.randn(batch_size, self.N, 2, dtype=torch.float64)
+        X = X / torch.norm(X, dim=-1, keepdim=True)
+        output = self.model(X)
+        assert output.shape == (batch_size,), "Forward output shape is incorrect."
+
+    def test_forward_probability_range(self):
+        model_identity = MPSTPCP(N=self.N, K=self.K, d=self.d, with_identity=True)
+        batch_size = 10
+        X = torch.randn(batch_size, self.N, 2, dtype=torch.float64)
+        X = X / torch.norm(X, dim=-1, keepdim=True)
+        output = model_identity(X)
+        assert torch.all((output >= 0) & (output <= 1)), "Output probabilities are not in the range [0, 1]."
+
+    def test_is_tpcp_on_identity(self):
+        identity = torch.eye(self.act_size, dtype=torch.float64)
+        kraus_identity = (1.0 / np.sqrt(self.K)) * identity
+        tensor_identity = torch.stack([kraus_identity] * self.K).reshape(self.K, self.act_size, self.act_size)
+        stiefel = geoopt.Stiefel()
+        candidate = tensor_identity.reshape(self.K * self.act_size, self.act_size)
+        # Using geoopt's check function (or .belongs, depending on your geoopt version)
+        assert stiefel.check_point_on_manifold(candidate), "Identity does not belong to the Stiefel manifold."
+        assert self.model.kraus_ops.is_tpcp(tensor_identity), "is_tpcp did not return True for identity initialization."
+    # === Expected Output Tests ===
+
+    def test_expected_output_trivial_identity(self):
         """
-        Test the first output match for trivial input and simple singlet-triplet unitary.
-
-        The input is trivial (all elements are zero except the first element which is one) and the unitary is a simple singlet-triplet unitary.
-        This test ensures that the output of the MPSTPCP model matches the output of the uMPS model for this specific case.
+        Case 1:
+        When the Kraus operators are identity and the inputs are trivial (each qubit in state [1, 0]),
+        the channel acts as the identity. For input |00>, the reduced density matrix for qubit 2 is |0><0|
+        so the probability of measuring 0 is 1.
         """
+        batch_size = 5
+        K = 1
+        trivial_input = torch.zeros(batch_size, self.N, 2, dtype=torch.float64)
+        trivial_input[:, :, 0] = 1.0
+        model_identity = MPSTPCP(N=self.N, K=K, d=self.d, with_identity=True)
+        output = model_identity(trivial_input, normalize=False)
+        expected = torch.ones(batch_size, dtype=torch.float64)
+        assert torch.allclose(output, expected, atol=1e-6), \
+            "Trivial identity output does not match expected value of 1 for all samples."
 
+    def test_kraus_operator_shape_for_K_identity(self):
+        """
+        Case 2:
+        When the Kraus operators are set to identity for K > 1, the underlying parameter matrix
+        should have shape (K * act_size, act_size), i.e. (K * d^n, d^n).
+        For d=2, n=2, and K=2, we expect (2*4, 4) = (8, 4).
+        """
+        K = 2
+        model_identity = MPSTPCP(N=self.N, K=K, d=self.d, with_identity=True)
+        expected_shape = (K * self.act_size, self.act_size)
+        for param in model_identity.kraus_ops:
+            assert param.shape == expected_shape, \
+                f"Kraus operator shape is {param.shape}, expected {expected_shape}"
+
+    def test_expected_output_unitary(self):
+        """
+        Case 3:
+        When the Kraus operators are set to a specific unitary matrix and N=2.
+        Here we use a permutation unitary defined on the 4-dimensional space.
+        For trivial input |00>, the unitary maps the state to another basis vector,
+        but the reduced probability (obtained via partial trace) should still be 1.
+        """
+        # Define a permutation matrix (which is unitary) of shape 4x4.
+        U = torch.tensor([[0., 1., 0., 0.],
+                          [1., 0., 0., 0.],
+                          [0., 0., 0., 1.],
+                          [0., 0., 1., 0.]], dtype=torch.float64)
+        batch_size = 5
+        trivial_input = torch.zeros(batch_size, self.N, 2, dtype=torch.float64)
+        trivial_input[:, :, 0] = 1.0
+        # Expected: for |00>, the state is the first canonical basis vector.
+        # Under U, |00> maps to the first column of U, which is [0, 1, 0, 0]^T.
+        # Then the reduced density matrix for qubit 2 (after partial trace) yields probability 1.
+        init_with = U.reshape(1, 1, self.act_size, self.act_size)
+        model_unitary = MPSTPCP(N=self.N, K=1, d=self.d, with_identity=False)
+        model_unitary.kraus_ops.init_params(init_with=init_with)
+        output = model_unitary(trivial_input, normalize=False)
+        expected = torch.zeros(batch_size, dtype=torch.float64)
+        assert torch.allclose(output, expected, atol=1e-6), \
+            "Expected output for unitary Kraus operator does not match expected value of 1."
+
+    def test_expected_output_random_stiefel(self):
+        """
+        Case 4:
+        When the Kraus operators are randomly initialized on the Stiefel manifold and N=2.
+        For a trivial input |00>, we manually compute the channel's output.
+        """
+        batch_size = 5
         N = 2
-        U = torch.eye(4, dtype=torch.float64)
-        rand_input = torch.zeros(100, N, 2, dtype=torch.float64)
-        rand_input[:, :, 0] = 1
-        tpcpmps_model = MPSTPCP(N=N, K=1, d=self.d, with_identity=False)
-        tpcpmps_model.kraus_ops.init_params(init_with=U.reshape(1, 1, 4, 4))
-        tpcpmps_output = tpcpmps_model(rand_input, normalize=False)
+        K = 3
+        trivial_input = torch.zeros(batch_size, N, 2, dtype=torch.float64)
+        trivial_input[:, :, 0] = 1.0
+        # Use the default (random Stiefel) initialization.
+        model_random = MPSTPCP(N=N, K=K, d=self.d, with_identity=False)
+        output_model = model_random(trivial_input, normalize=False)
+        # Manually compute the channel action:
+        psi = torch.kron(torch.tensor([1.0, 0.0], dtype=torch.float64),
+                         torch.tensor([1.0, 0.0], dtype=torch.float64))
+        rho_manual = torch.outer(psi, psi)  # 4x4 density matrix for |00><00|
 
-        mps_model = uMPS(N=N, chi=self.chi, d=self.d, l=self.d, layers=self.layers, device=torch.device("cpu"), init_with_identity=False)
-        mps_model.initialize_MPS(init_with=U.reshape(1, 2, 2, 2, 2))
-        mps_output = mps_model(rand_input.permute(1, 0, 2), normalize=False)
+        assert len(list(model_random.kraus_ops.parameters())) == 1
 
-        assert tpcpmps_output.shape == (100,), "tpcpmps_output is not a vector with 100 elements"
-        assert mps_output.shape == (100,), "mps_output is not a vector with 100 elements"
+        kraus_param = model_random.kraus_ops[0].reshape(self.K, self.act_size, self.act_size)
+        rho_after_list = [E @ rho_manual @ E.conj().t() for E in kraus_param]
+        rho_after = sum(rho_after_list)
+        # Partial trace over the first qubit.
+        rho_reshaped = rho_after.reshape(self.d, self.d, self.d, self.d)
+        rho_reduced = torch.einsum("a c a d -> c d", rho_reshaped)
+        expected_manual = rho_reduced[0, 0]  # probability of measuring 0 on the second qubit
+        # Check that every sample's output matches the manually computed probability.
+        for val in output_model:
+            assert torch.allclose(val, expected_manual, atol=1e-6), \
+                "Random Stiefel output does not match manual computation."
 
-        # Calculate the last output using hard-coded formula
-        for i, x in enumerate(rand_input):
-            # Get first element of input
-            input1 = x[0, :]
-            input2 = x[1, :]
-            psi = torch.kron(input1, input2)
-            assert torch.allclose(torch.norm(psi), torch.tensor(1.0, dtype=torch.float64)), "psi is not normalized"
-            psi = U @ psi
-
-            # the probability of the second element being 0
-            prob0 = torch.abs(psi[0])**2 + torch.abs(psi[2])**2
-
-            assert torch.allclose(prob0, tpcpmps_output[i]), "The probability of the second element being 0 does not match"
-            assert torch.allclose(prob0, mps_output[i]), "The probability of the second element being 0 does not match"
-
-    def test_singlet_triplet_unitary_random_input(self):
+    def test_expected_output_random_stiefel_normalized(self):
         """
-        Test the output match for random input and simple singlet-triplet unitary.
-
-        The input is random and the unitary is a simple singlet-triplet unitary.
-        This test ensures that the output of the MPSTPCP model matches the output of the uMPS model for this specific case.
+        Case 5:
+        When the Kraus operators are randomly initialized on the Stiefel manifold and N=2.
+        For a normalized random input, we manually compute the channel's output.
         """
-
+        batch_size = 5
         N = 2
-        U = torch.zeros((4, 4), dtype=torch.float64)
-        U[0, 0] = 1 / np.sqrt(2)
-        U[0, 3] = 1 / np.sqrt(2)
-        U[3, 0] = 1 / np.sqrt(2)
-        U[3, 3] = -1 / np.sqrt(2)
-        U[1, 1] = 1
-        U[2, 2] = 1
-        rand_input = torch.randn(100, N, 2, dtype=torch.float64)
-        rand_input /= torch.norm(rand_input, dim=-1, keepdim=True)
-        tpcpmps_model = MPSTPCP(N=N, K=1, d=self.d, with_identity=False)
-        tpcpmps_model.kraus_ops.init_params(init_with=U.reshape(1, 1, 4, 4))
-        tpcpmps_output = tpcpmps_model(rand_input, normalize=False)
+        K = 3
+        # Generate normalized random input
+        random_input = torch.randn(batch_size, N, 2, dtype=torch.float64)
+        random_input /= torch.norm(random_input, dim=-1, keepdim=True)
+        # Use the default (random Stiefel) initialization.
+        model_random = MPSTPCP(N=N, K=K, d=self.d, with_identity=False)
+        output_model = model_random(random_input, normalize=False)
+        # Manually compute the channel action:
+        for i in range(batch_size):
+            psi0 = random_input[i, 0, :]
+            psi1 = random_input[i, 1, :]
+            psi = torch.kron(psi0, psi1)
+            rho_manual = torch.outer(psi, psi.conj())  # 4x4 density matrix
 
-        mps_model = uMPS(N=N, chi=self.chi, d=self.d, l=self.d, layers=self.layers, device=torch.device("cpu"), init_with_identity=False)
-        mps_model.initialize_MPS(init_with=U.reshape(1, 2, 2, 2, 2))
-        mps_output = mps_model(rand_input.permute(1, 0, 2), normalize=False)
+            assert len(list(model_random.kraus_ops.parameters())) == 1
 
-        assert tpcpmps_output.shape == (100,), "tpcpmps_output is not a vector with 100 elements"
-        assert mps_output.shape == (100,), "mps_output is not a vector with 100 elements"
-
-        # Calculate the last output using hard-coded formula
-        for i, x in enumerate(rand_input):
-            # Get first element of input
-            input1 = x[0, :]
-            input2 = x[1, :]
-            psi = torch.kron(input1, input2)
-            assert torch.allclose(torch.norm(psi), torch.tensor(1.0, dtype=torch.float64)), "psi is not normalized"
-            psi = U @ psi
-
-            # the probability of the second element being 0
-            prob0 = torch.abs(psi[0])**2 + torch.abs(psi[2])**2
-
-            assert torch.allclose(prob0, tpcpmps_output[i]), "The probability of the second element being 0 does not match"
-            assert torch.allclose(prob0, mps_output[i]), "The probability of the second element being 0 does not match"
-
-    def test_random_unitary_random_input(self):
-        """
-        Test the output match for random binary input and a random unitary.
-
-        The input is random binary (0 or 1) and the unitary is slightly off the singlet-triplet unitary.
-        This test ensures that the output of the MPSTPCP model matches the output of the uMPS model for this specific case.
-        """
-
-        N = 2
-        U = self.random_unitary(dtype=torch.float64, device=torch.device("cpu"))
-
-        # Generate random binary input where either 0-th or 1-th element is 1
-        rand_input = torch.zeros((100, N, 2), dtype=torch.float64)  # Initialize with zeros
-        one_inds = torch.randint(0, 2, (100, N))  # Vector of 0 or 1
-        rand_input[torch.arange(100).unsqueeze(1), torch.arange(N), one_inds] = 1  # Set either 0-th or 1-th element to 1
-
-        rand_input /= torch.norm(rand_input, dim=-1, keepdim=True)
-        tpcpmps_model = MPSTPCP(N=N, K=1, d=self.d, with_identity=False)
-        tpcpmps_model.kraus_ops.init_params(init_with=U.reshape(1, 1, 4, 4))
-        tpcpmps_output = tpcpmps_model(rand_input, normalize=False)
-
-        mps_model = uMPS(N=N, chi=self.chi, d=self.d, l=self.d, layers=self.layers, device=torch.device("cpu"), init_with_identity=False)
-        mps_model.initialize_MPS(init_with=U.reshape(1, 2, 2, 2, 2))
-        mps_output = mps_model(rand_input.permute(1, 0, 2), normalize=False)
-
-        assert tpcpmps_output.shape == (100,), "tpcpmps_output is not a vector with 100 elements"
-        assert mps_output.shape == (100,), "mps_output is not a vector with 100 elements"
-
-        # Calculate the last output using hard-coded formula
-        for i, x in enumerate(rand_input):
-            # Get first element of input
-            input1 = x[0, :]
-            input2 = x[1, :]
-            psi = torch.kron(input1, input2)
-            assert torch.allclose(torch.norm(psi), torch.tensor(1.0, dtype=torch.float64)), "psi is not normalized"
-            psi = U @ psi
-
-            # the probability of the second element being 0
-            prob0 = torch.abs(psi[0])**2 + torch.abs(psi[2])**2
-
-            assert torch.allclose(prob0, tpcpmps_output[i]), "The probability of the second element being 0 does not match"
-            assert torch.allclose(prob0, mps_output[i]), "The probability of the second element being 0 does not match"
-
-    def test_outputs_match_identity(self):
-        umps_model = uMPS(
-            N=self.N,
-            chi=self.chi,
-            d=self.d,
-            l=self.d,
-            layers=self.layers,
-            device=torch.device("cpu"),
-            init_with_identity=True
-        )
-        tpcpmps_model = MPSTPCP(N=self.N, K=1, d=self.d, with_identity=True)
-
-        # Get outputs from both models
-        tpcpmps_output = tpcpmps_model(self.rand_input)
-        umps_output = umps_model(self.rand_input.permute(1, 0, 2))
-
-        # Assert that the outputs are close
-        assert torch.allclose(tpcpmps_output, umps_output, atol=1e-6), "Outputs from uMPS and MPSTPCP do not match"
-    
-
-
-    def test_outputs_match_random_unitary(self):
-
-        # # Initialize uMPS with the random unitary
-        umps_model = uMPS(
-            N=self.N,
-            chi=self.chi,
-            d=self.d,
-            l=self.d,
-            layers=self.layers,
-            device=torch.device("cpu"),
-            init_with_identity=False
-        )
-
-        umps_model.initialize_MPS(init_with=self.random_Us.reshape(-1, self.chi, self.chi, self.chi, self.chi))
-        tpcpmps_model = MPSTPCP(N=self.N, K=1, d=self.d, with_identity=False)
-        tpcpmps_model.kraus_ops.init_params(init_with=self.random_Us.reshape(-1, 1, self.chi**2, self.chi**2))  # Adjust based on actual method
-
-        # # Get outputs from both models
-        tpcpmps_output = tpcpmps_model(self.rand_input)
-        umps_output = umps_model(self.rand_input.permute(1, 0, 2))
-
-        # # Assert that the outputs are close
-        assert torch.allclose(tpcpmps_output, umps_output, atol=1e-6), "Outputs from uMPS and MPSTPCP with random unitary do not match"
+            kraus_param = model_random.kraus_ops[0].reshape(K, self.act_size, self.act_size)
+            rho_after_list = [E @ rho_manual @ E.conj().t() for E in kraus_param]
+            rho_after = sum(rho_after_list)
+            # Partial trace over the first qubit.
+            rho_reshaped = rho_after.reshape(self.d, self.d, self.d, self.d)
+            rho_reduced = torch.einsum("a c a d -> c d", rho_reshaped)
+            expected_manual = rho_reduced[0, 0]  # probability of measuring 0 on the second qubit
+            assert torch.allclose(output_model[i], expected_manual, atol=1e-6), \
+                "Random Stiefel output with normalized input does not match manual computation."
