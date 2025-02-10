@@ -59,6 +59,10 @@ def loss_batch(outputs, labels):
     for i in range(len(outputs)):
         prob = outputs[i] if labels[i] == 0 else (1 - outputs[i])
         loss -= torch.log(prob + 1e-8)
+        # Start of Selection
+        if torch.isnan(loss):
+            print(f"Loss is NaN at i={i}")
+            print(prob, outputs[i], labels[i])
     return loss
 
 def calculate_accuracy(outputs, labels):
@@ -78,8 +82,9 @@ def train_tpcp_mnist(
     K: int,
     batch_size: int,
     epochs: int,
-    num_data: int = None,
-    lr: float = 0.01
+    num_data: int | None = None,
+    lr: float = 0.01,
+    log_steps: int = 100
 ):
     """
     Fully train an MPSTPCP model on MNIST (digits 0 and 1) with the given parameters:
@@ -90,6 +95,7 @@ def train_tpcp_mnist(
       - epochs
       - num_data = how many total examples from MNIST (0 or 1). If None, use entire dataset.
       - lr = learning rate
+      - log_steps = number of steps between logging loss values
 
     Returns:
       A list 'all_losses' containing the loss after each batch (iteration).
@@ -148,6 +154,7 @@ def train_tpcp_mnist(
     )
     model.train()
 
+
     # --------------------------
     # 3) Choose Riemannian optimizer
     # --------------------------
@@ -168,7 +175,7 @@ def train_tpcp_mnist(
         epoch_acc = 0.0
         total_batches = 0
 
-        for data, target in trainloader:
+        for step, (data, target) in enumerate(trainloader):
             # data => shape [bs, 256, 2]
             # target => shape [bs]
             optimizer.zero_grad()
@@ -179,17 +186,27 @@ def train_tpcp_mnist(
             if torch.isnan(outputs).any():
                 print("NaN detected in outputs, skipping batch.")
                 continue
-            
 
             batch_loss = loss_batch(outputs, target)
             batch_loss.backward()
             optimizer.step()
 
+            # Assert if the params are TPCP using geoopt's built-in function
+            for param in model.parameters():
+                p = param.data.clone().reshape(K, d**2, d**2)
+                I = torch.zeros(d**2, d**2, dtype=p.dtype, device=p.device)
+                for i in range(K):
+                    I += p[i].T @ p[i]
+                if not torch.allclose(I, torch.eye(d**2, dtype=p.dtype, device=p.device)):
+                    print(f"Parameter is not TPCP at step {step}.")
+                    print(p)
+                    raise ValueError("Parameter is not TPCP.")
+
             # Record batch-wise loss for plotting
             all_losses.append(batch_loss.item())
 
             if torch.isnan(batch_loss).any():
-                print("NaN detected in target, skipping batch.")
+                print("NaN detected in batch_loss, skipping batch.")
                 continue
 
             # Compute stats
@@ -197,6 +214,10 @@ def train_tpcp_mnist(
             batch_acc = calculate_accuracy(outputs.detach(), target)
             epoch_acc += batch_acc.item()
             total_batches += 1
+
+            # Log loss values at each log_steps
+            if (step + 1) % log_steps == 0:
+                print(f"Epoch {epoch+1:02}/{epochs:02} | Step {step+1:03}/{len(trainloader):03} | Loss: {batch_loss.item():.6f}")
 
         # Print epoch-level stats
         if total_batches > 0:
@@ -206,7 +227,7 @@ def train_tpcp_mnist(
             avg_loss = float('nan')
             avg_acc = float('nan')
 
-        print(f"Epoch {epoch+1}/{epochs}: loss={avg_loss:.4f}, acc={avg_acc:.4f}")
+        print(f"Epoch {epoch+1:02}/{epochs:02} | Avg Loss: {avg_loss:.6f} | Avg Acc: {avg_acc:.2%}")
 
     return all_losses
 
@@ -235,6 +256,10 @@ def main():
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed (default: None => system-based).")
 
+    # New: log_steps argument
+    parser.add_argument("--log_steps", type=int, default=5,
+                        help="Number of steps between logging loss values (default 100).")
+
     args = parser.parse_args()
 
     # -------------------------------------------
@@ -255,7 +280,8 @@ def main():
         batch_size=args.batch_size,
         epochs=args.epochs,
         num_data=args.num_data,
-        lr=args.lr
+        lr=args.lr,
+        log_steps=args.log_steps
     )
 
     # --------------------------

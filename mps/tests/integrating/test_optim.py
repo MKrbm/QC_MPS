@@ -34,6 +34,8 @@ def test_umps_tpcp_mps_integration():
       (4) Loss decreases after optimization
       (5) Same forward outputs after one step of optimization
       (6) Same forward outputs after 10 steps of optimization
+      (7) The last element in mpstpcp_model.rhos is a valid density matrix
+         (trace ~ 1, Hermitian, positive semidefinite).
     for uMPS vs. MPSTPCP (Stiefel EXACT).
     """
     # --------------------------
@@ -60,8 +62,6 @@ def test_umps_tpcp_mps_integration():
     umps_model = uMPS(N=N, chi=chi, d=2, l=2, layers=layers, device=torch.device("cpu"), init_with_identity=True)
     mpstpcp_model = MPSTPCP(N=N, K=1, d=2, with_identity=True, manifold=ManifoldType.EXACT)
 
-    umps_model.
-
     # Prepare input shapes
     input_for_umps = data.permute(1, 0, 2)  # shape (N, bs, 2)
     input_for_tpcp = data                  # shape (bs, N, 2)
@@ -75,6 +75,35 @@ def test_umps_tpcp_mps_integration():
     # --------------------------
     assert torch.allclose(outputs_umps, outputs_tpcp, atol=1e-6), \
         "Forward pass outputs differ between uMPS and MPSTPCP"
+
+    #
+    # NEW: Check the last element in mpstpcp_model.rhos is a proper density matrix
+    #
+    # mpstpcp_model.rhos is a list of intermediate rhos at each layer/site.
+    # The last one is at mpstpcp_model.rhos[-1], shape [batch_size, dim, dim].
+    #
+    with torch.no_grad():
+        rho_last = mpstpcp_model.rhos[-1]  # shape (bs, D, D) for some dimension D
+        assert rho_last.ndim == 3, "Expected rhos[-1] to have shape [batch_size, dim, dim]"
+        for i in range(rho_last.size(0)):
+            # 1) Check trace ~ 1
+            trace_val = torch.trace(rho_last[i])
+            assert torch.allclose(
+                trace_val, 
+                torch.tensor(1.0, dtype=rho_last.dtype, device=rho_last.device),
+                atol=1e-6
+            ), f"Trace of rho at batch index {i} is not 1. Got {trace_val}."
+
+            # 2) Check Hermiticity => rho == rho^\dagger
+            # If your code is real, this is just .T, else use .conj().T
+            assert torch.allclose(rho_last[i], rho_last[i].T.conj(), atol=1e-6), \
+                f"rho at batch {i} is not Hermitian."
+
+            # 3) Check positive semidefinite => eigenvalues >= 0
+            # We'll use eigvalsh for Hermitian to get real eigenvals
+            eigvals = torch.linalg.eigvalsh(rho_last[i])
+            assert torch.all(eigvals >= -1e-7), \
+                f"rho at batch {i} has negative eigenvalues => not PSD. eigvals={eigvals}."
 
     # --------------------------
     # 4) Set up optimizers

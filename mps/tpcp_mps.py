@@ -169,8 +169,8 @@ class MPSTPCP(nn.Module):
         self.d = d  # single-qubit dimension (d=2)
 
         self.L = N - 1
-        self.manifold = manifold
         self.kraus_ops = kraus_operators(K, L=self.L, with_identity=with_identity, manifold=manifold)
+        self.manifold = self.kraus_ops.manifold
 
     def forward(self, X, normalize: bool = True):
         """
@@ -180,6 +180,9 @@ class MPSTPCP(nn.Module):
         assert X.shape[1:] == (self.N, 2), f"Expected X to have shape (batch_size, {self.N}, 2), but got {X.shape}"
         if normalize:
             X = X / torch.norm(X, dim=-1).unsqueeze(-1)
+
+        # self.proj_stiefel(check_on_manifold=True)
+
         batch_size = X.shape[0]
         self.rhos = []
         rho1 = self.get_rho(X[:, 0])
@@ -194,14 +197,22 @@ class MPSTPCP(nn.Module):
             rho = self.forward_layer(rho, kraus_ops)
             self.rhos.append(rho.detach().clone())
 
-            if i < self.N - 2:
+            if i < self.L - 1:
                 rho = self.partial(rho, 0)
                 next_rho = self.get_rho(X[:, i + 2])
                 rho = self.tensor_product(rho, next_rho)
 
-        res = self.partial(rho, 0)[..., 0, 0]
+            # Start of Selection
+            rho_out = self.partial(rho, 0)
+
+            # rho_test = rho_out[0, :, :]
+            # trace = torch.trace(rho_test)
+            # assert torch.isclose(trace, torch.tensor(1.0, device=rho_test.device, dtype=rho_test.dtype)), f"Trace of rho_out is {trace}, expected 1."
+            # diag = torch.diagonal(rho_test, dim1=-2, dim2=-1)
+            # assert torch.all(diag >= 0), "Some diagonal elements of rho_out are negative."
+
         self.rhos = torch.stack(self.rhos)
-        return res
+        return rho_out[..., 0, 0].reshape(batch_size)
 
     @staticmethod
     def tensor_product(rho1, rho2):
@@ -218,8 +229,28 @@ class MPSTPCP(nn.Module):
         batch_size = x.shape[0]
         assert x.shape == (batch_size, 2), "x must be a tensor of shape (batch_size, 2)"
         return torch.einsum("bi,bj->bij", x, x.conj())
-
+    
     def forward_layer(self, rho, kraus_ops):
+        """
+        Applies a layer of Kraus operators to the input density matrix `rho`.
+
+        This function projects the Kraus operators onto the Stiefel manifold
+        to ensure they remain valid quantum operations. It then applies these
+        operators to the input density matrix `rho` to produce a new density
+        matrix.
+
+        Parameters:
+        - rho (torch.Tensor): A batch of density matrices with shape 
+          (batch_size, d^2, d^2), where `d` is the dimension of the quantum 
+          system.
+        - kraus_ops (torch.Tensor): A set of Kraus operators with shape 
+          (K, d, d), where `K` is the number of Kraus operators.
+
+        Returns:
+        - new_rho (torch.Tensor): The resulting batch of density matrices 
+          after applying the Kraus operators, with shape (batch_size, d, d).
+        """
+        self.proj_stiefel(check_on_manifold=True)
         batch_size = rho.shape[0]
         assert rho.shape == (batch_size, self.d**2, self.d**2), "rho must be a tensor of shape (batch_size, d^2, d^2)"
 
@@ -257,3 +288,25 @@ class MPSTPCP(nn.Module):
             raise ValueError("site must be 0 or 1 for a 2-qubit system.")
 
         return reduced
+    
+    def proj_stiefel(self, check_on_manifold: bool = True):
+        """
+        Projects the Kraus operators onto the Stiefel manifold
+        to ensure they remain valid quantum operations.
+        """
+        if check_on_manifold:
+            if not self.check_point_on_manifold():
+                for param in self.kraus_ops.parameters():
+                    param.data.copy_(self.manifold.projx(param.data))
+        else:
+            for param in self.kraus_ops.parameters():
+                param.data.copy_(self.manifold.projx(param.data))
+    
+    def check_point_on_manifold(self, rtol = 1e-5) -> bool:
+        """
+        Checks if the Kraus operators are on the Stiefel manifold.
+        """
+        for param in self.kraus_ops.parameters():
+            if not self.manifold.check_point_on_manifold(param.data, rtol = rtol):
+                return False
+        return True
