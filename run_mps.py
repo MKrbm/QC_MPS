@@ -83,6 +83,7 @@ def train_umps_mnist(
     lr: float,
     log_steps: int = 100,
     seed: int | None = None,
+    num_data: int | None = None,
 ):
     """
     Train an uMPS model on MNIST (digits 0 and 1) with the given parameters:
@@ -92,6 +93,7 @@ def train_umps_mnist(
       - lr (learning rate)
       - log_steps (how many steps between logging loss values)
       - seed (random seed)
+      - num_data (number of data points to use from MNIST)
 
     Returns:
       A list 'all_losses' containing the loss after each batch (iteration).
@@ -127,6 +129,9 @@ def train_umps_mnist(
     )
     # Keep only digits 0 and 1
     trainset = filter_dataset(trainset, allowed_digits=[0, 1])
+
+    if num_data is not None:
+        trainset = torch.utils.data.Subset(trainset, range(num_data))
 
     trainloader = torch.utils.data.DataLoader(
         trainset,
@@ -248,6 +253,12 @@ def main():
         default=None,
         help="Random seed (default: None => system-based).",
     )
+    parser.add_argument(
+        "--num_data",
+        type=int,
+        default=None,
+        help="Number of data points to use from MNIST (default: None => use all data).",
+    )
 
     args = parser.parse_args()
 
@@ -258,6 +269,7 @@ def main():
         lr=args.lr,
         log_steps=args.log_steps,
         seed=args.seed,
+        num_data=args.num_data,
     )
 
     # Optionally, you can do additional things here, like plotting:

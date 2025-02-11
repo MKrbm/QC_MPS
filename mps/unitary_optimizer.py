@@ -6,16 +6,14 @@ def riemannian_gradient(u: torch.Tensor, euc_grad: torch.Tensor) -> torch.Tensor
     """
     Requires square matrices for u and euc_grad.
     """
-    grad = euc_grad @ u.T.conj()
-    print(f"1. grad: {grad}")
-    print(f"2. grad - grad.T.conj(): {grad - grad.T.conj()}")
+    grad = u.T.conj() @ euc_grad
     return (grad - grad.T.conj()) / 2
 
 def exp_map(u: torch.Tensor, rg: torch.Tensor) -> torch.Tensor:
     """
     Exponential map on the unitary manifold.
     """
-    res =  torch.linalg.matrix_exp(-rg) @ u
+    res =  u @ torch.linalg.matrix_exp(-rg)
     return closest_unitary(res)
 
 def closest_unitary(u: torch.Tensor) -> torch.Tensor:
@@ -97,7 +95,7 @@ class Adam:
         self.epsilon = epsilon
         self.t = 0  # Time step
 
-        # Initialize first and second moment estimates (analogous to exp_avg and exp_avg_sq)
+        # Initialize first and second moment estimates
         self.m = []
         self.v = []
         # Ensure that the MPS unitaries have gradients enabled and initialize m and v
@@ -114,63 +112,51 @@ class Adam:
         """
         chi = self.circuit.chi
         self.t += 1  # Increment time step
-
-        print(f"\n--- Custom Adam: Step {self.t} ---")
         with torch.no_grad():
             for idx, unitary in enumerate(self.circuit.params):
-                if unitary.grad is None:
-                    continue
+                if unitary.grad is not None:
+                    # Reshape unitary and gradient
+                    u = unitary.view(chi**2, chi**2)
+                    euc_grad = unitary.grad.view(chi**2, chi**2)
 
-                print(f"\n--- Parameter {idx} ---")
-                # Print the current state (first and second moment estimates)
-                print(f"State: m (exp avg): {self.m[idx]}")
-                print(f"State: v (exp avg sq): {self.v[idx]}")
+                    # Compute the Riemannian gradient (skew-Hermitian part)
+                    gt = riemannian_gradient(u, euc_grad)
 
-                # Reshape unitary and its Euclidean gradient
-                u = unitary.view(chi**2, chi**2)
-                print(f"Unitary reshaped: {u}")
-                euc_grad = unitary.grad.view(chi**2, chi**2)
-                print(f"Euclidean grad reshaped: {euc_grad}")
+                    print("gt : ", gt.reshape(4,4))
 
-                # Compute the Riemannian gradient (for example, the skew-Hermitian part)
-                gt = riemannian_gradient(u, euc_grad)
-                print(f"Grad (Riemannian): {gt}")
+                    # Update biased first moment estimate
+                    self.m[idx] = self.beta1 * self.m[idx] + (1 - self.beta1) * gt.view(unitary.shape)
 
-                # Update biased first moment estimate (analogous to exp_avg)
-                self.m[idx] = self.beta1 * self.m[idx] + (1 - self.beta1) * gt.view(unitary.shape)
-                # Update biased second raw moment estimate (analogous to exp_avg_sq)
-                gt_squared = gt.abs() ** 2
-                self.v[idx] = self.beta2 * self.v[idx] + (1 - self.beta2) * gt_squared.view(unitary.shape)
-                print(f"Updated m (exp avg): {self.m[idx]}")
-                print(f"Updated v (exp avg sq): {self.v[idx]}")
+                    print("m : ", self.m[idx].reshape(4,4))
 
-                # Compute bias corrections
-                bias_correction1 = 1 - self.beta1**self.t
-                bias_correction2 = 1 - self.beta2**self.t
-                print(f"Bias correction 1: {bias_correction1}")
-                print(f"Bias correction 2: {bias_correction2}")
+                    # Update biased second raw moment estimate (element-wise square of gradient)
+                    gt_squared = gt.abs() ** 2
+                    self.v[idx] = (
+                        self.beta2 * self.v[idx] + (1 - self.beta2) * gt_squared.view(unitary.shape)
+                    )
 
-                # Compute bias-corrected first and second moment estimates
-                mhat = self.m[idx] / bias_correction1
-                vhat = self.v[idx] / bias_correction2
-                print(f"mhat (bias-corrected exp avg): {mhat}")
-                print(f"vhat (bias-corrected exp avg sq): {vhat}")
+                    print("v : ", self.v[idx].reshape(4,4))
 
-                # Compute the denominator (equivalent to sqrt(vhat) in Adam)
-                denom = torch.sqrt(vhat)
-                print(f"Denom: {denom}")
 
-                # Compute the update direction
-                direction = self.lr * mhat / (denom + self.epsilon)
-                print(f"Direction (update): {direction}")
+                    # Compute bias-corrected first moment estimate
+                    mhat = self.m[idx] / (1 - self.beta1**self.t)
 
-                # Apply the exponential map to update the unitary.
-                # (exp_map is assumed to map from the tangent space back to the manifold)
-                u_updated = exp_map(u, direction.view(chi**2, chi**2))
-                print(f"New point: {u_updated}")
+                    # Compute bias-corrected second raw moment estimate
+                    vhat = self.v[idx] / (1 - self.beta2**self.t)
 
-                # Update the unitary in the circuit
-                unitary.copy_(u_updated.view(unitary.shape))
+
+                    # Compute the update
+                    rg = mhat / (torch.sqrt(vhat) + self.epsilon)
+                    print("mhat : ", mhat.reshape(4,4))
+                    print("denom : ", torch.sqrt(vhat).reshape(4,4))
+
+                    print("rg : ", rg.reshape(4,4))
+
+                    # Apply the exponential map to update the unitary
+                    u_updated = exp_map(u, self.lr * rg.view(chi**2, chi**2))
+
+                    # Update the unitary in the circuit
+                    unitary.copy_(u_updated.view(unitary.shape))
 
     def zero_grad(self):
         """
@@ -179,7 +165,6 @@ class Adam:
         for unitary in self.circuit.params:
             if unitary.grad is not None:
                 unitary.grad.zero_()
-
 
 
 
