@@ -216,6 +216,8 @@ def train_tpcp_mnist(
             if torch.isnan(batch_loss).any():
                 print("NaN detected in batch_loss, skipping batch.")
                 continue
+                
+            model.proj_stiefel(check_on_manifold=True, print_log=False, rtol = 1e-3)
 
             # Compute stats
             epoch_loss += batch_loss.item()
@@ -297,7 +299,7 @@ def main():
     parser.add_argument(
         "--log_steps",
         type=int,
-        default=5,
+        default=10,
         help="Number of steps between logging loss values (default 100).",
     )
 

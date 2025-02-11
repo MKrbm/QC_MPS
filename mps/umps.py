@@ -221,7 +221,7 @@ class uMPS(nn.Module):
         print("Initialized MPS params")
 
     @staticmethod
-    def is_unitary(tensor: torch.Tensor) -> bool:
+    def is_unitary(tensor: torch.Tensor, rtol: float = 1e-6) -> bool:
         """
         Check if the given tensor is unitary.
 
@@ -234,7 +234,7 @@ class uMPS(nn.Module):
         if tensor.ndim != 2:
             return False
         identity = torch.eye(tensor.size(0), dtype=tensor.dtype, device=tensor.device)
-        return torch.allclose(tensor.conj().transpose(-2, -1) @ tensor, identity, atol=1e-6)
+        return torch.allclose(tensor.conj().transpose(-2, -1) @ tensor, identity, rtol=rtol)
 
     def set_path(self, optimize: str = 'greedy', batch_size: int = 100):
         if self.path is not None:
@@ -316,3 +316,66 @@ class uMPS(nn.Module):
                 u = self.params[i].reshape(self.chi ** 2, self.chi ** 2).detach().cpu().numpy()
                 assert np.allclose(u @ u.T.conj(), np.eye(self.chi ** 2)), "Unitary check failed"
         print("Set MPS unitaries")
+
+    def _proj_to_unitary(self, tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Helper function that projects a tensor back onto the unitary manifold using SVD.
+        The tensor is first reshaped to a square matrix, then projected via SVD,
+        and finally reshaped back to its original shape.
+        
+        Args:
+            tensor (torch.Tensor): The tensor to project.
+            
+        Returns:
+            torch.Tensor: The projected tensor with the same shape as the input.
+        """
+        orig_shape = tensor.shape
+        matrix = tensor.reshape(self.chi**2, self.chi**2)
+        U, S, Vh = torch.linalg.svd(matrix, full_matrices=False)
+        return (U @ Vh).reshape(orig_shape)
+
+    # def check_point_on_unitary(self, rtol: float = 1e-5, print_log: bool = False) -> bool:
+    #     """
+    #     Checks if all MPS parameters are unitary.
+        
+    #     For each parameter (stored as a 4-index tensor), it reshapes it to a square matrix 
+    #     of size (chi**2, chi**2) and confirms that U†U equals the identity matrix.
+        
+    #     Args:
+    #         rtol (float): Relative tolerance to decide near-unitarity.
+    #         print_log (bool): If True, prints a message for parameters that are not unitary.
+            
+    #     Returns:
+    #         bool: True if every parameter is unitary, False otherwise.
+    #     """
+    #     for i, param in enumerate(self.params):
+    #         matrix = param.data.reshape(self.chi**2, self.chi**2)
+    #         identity = torch.eye(matrix.size(0), dtype=matrix.dtype, device=matrix.device)
+    #         if not torch.allclose(matrix.conj().T @ matrix, identity, atol=rtol):
+    #             if print_log:
+    #                 print(f"Parameter {i} is not unitary.")
+    #             return False
+    #     return True
+
+    def proj_unitary(self, check_on_unitary: bool = True, print_log: bool = False, rtol: float = 1e-5):
+        """
+        Projects the MPS parameters onto the unitary group using SVD.
+        
+        This method iterates over all parameters in self.params and projects any matrix
+        (when reshaped to (chi**2, chi**2)) that is not unitary. If check_on_unitary=True,
+        the method first checks and projects only those parameters that are not unitary.
+        Otherwise, all parameters are re-projected back onto the unitary group.
+        
+        Args:
+            check_on_unitary (bool): If True, only project those parameters that fail the unitarity check.
+            print_log (bool): If True, prints debug messages.
+            rtol (float): Relative tolerance for checking unitarity.
+        """
+
+        for i, param in enumerate(self.params):
+            if check_on_unitary and self.is_unitary(param.data, rtol=rtol):
+                continue
+            else:
+                param.data.copy_(self._proj_to_unitary(param.data))
+                if print_log:
+                    print(f"Parameter {i} projected to unitary.")

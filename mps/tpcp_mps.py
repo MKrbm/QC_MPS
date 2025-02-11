@@ -203,7 +203,7 @@ class MPSTPCP(nn.Module):
                 rho = self.tensor_product(rho, next_rho)
 
             # Start of Selection
-            rho_out = self.partial(rho, 0)
+        rho_out = self.partial(rho, 0)
 
             # rho_test = rho_out[0, :, :]
             # trace = torch.trace(rho_test)
@@ -250,7 +250,7 @@ class MPSTPCP(nn.Module):
         - new_rho (torch.Tensor): The resulting batch of density matrices 
           after applying the Kraus operators, with shape (batch_size, d, d).
         """
-        self.proj_stiefel(check_on_manifold=True)
+        # self.proj_stiefel(check_on_manifold=True)
         batch_size = rho.shape[0]
         assert rho.shape == (batch_size, self.d**2, self.d**2), "rho must be a tensor of shape (batch_size, d^2, d^2)"
 
@@ -289,26 +289,27 @@ class MPSTPCP(nn.Module):
 
         return reduced
     
-    def proj_stiefel(self, check_on_manifold: bool = True, print_log: bool = False):
+    def proj_stiefel(self, check_on_manifold: bool = True, print_log: bool = False, rtol: float = 1e-5):
         """
         Projects the Kraus operators onto the Stiefel manifold
         to ensure they remain valid quantum operations.
         """
         if check_on_manifold:
-            if not self.check_point_on_manifold():
+            if not self.check_point_on_manifold(rtol = rtol, print_log = print_log):
                 for param in self.kraus_ops.parameters():
                     param.data.copy_(self.manifold.projx(param.data))
-                if print_log:
-                    print("Projected Kraus operators onto the Stiefel manifold.")
         else:
             for param in self.kraus_ops.parameters():
                 param.data.copy_(self.manifold.projx(param.data))
     
-    def check_point_on_manifold(self, rtol = 1e-5) -> bool:
+    def check_point_on_manifold(self, rtol = 1e-5, print_log: bool = False) -> bool:
         """
         Checks if the Kraus operators are on the Stiefel manifold.
         """
         for param in self.kraus_ops.parameters():
-            if not self.manifold.check_point_on_manifold(param.data, rtol = rtol):
+            ok, reason = self.manifold.check_point_on_manifold(param.data,explain=True, rtol = rtol)
+            if not ok:
+                if print_log:
+                    print(f"Kraus operator is not on the Stiefel manifold: {reason}")
                 return False
         return True
