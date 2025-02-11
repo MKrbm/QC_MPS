@@ -140,7 +140,6 @@ def test_umps_tpcp_mps_integration():
     grad_mps = umps_model.params[0].grad.reshape(4, 4)
     rg_mps = unitary_optimizer.riemannian_gradient(u_mps, grad_mps)
     # To associate the correct direction, we negate the Riemannian gradient
-    rg_mps = - rg_mps
 
     # For MPSTPCP, we pick the first Kraus op
     u_tpcp = mpstpcp_model.kraus_ops[0]       # shape (4, 4)
@@ -183,7 +182,7 @@ def test_umps_tpcp_mps_integration():
     # They should be on the same manifold, so check close
     assert new_mps.shape == new_tpcp.shape, "Updated parameters shape mismatch"
     # The transpose of the uMPS parameter accounts for the opposite direction of the unitary-MPS.
-    assert torch.allclose(new_mps.T, new_tpcp, atol=1e-6), \
+    assert torch.allclose(new_mps, new_tpcp, atol=1e-6), \
         "After one optimization step, parameters differ between uMPS and MPSTPCP"
 
     # --------------------------

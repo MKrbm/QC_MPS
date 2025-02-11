@@ -190,8 +190,6 @@ class uMPS(nn.Module):
                 raise ValueError(f"init_with tensor must have shape ({len(self.params)}, {self.chi}, {self.chi}, {self.chi}, {self.chi})")
             for i, param in enumerate(self.params):
                 u = init_with[i].reshape(self.chi ** 2, self.chi ** 2)
-                # Have to match to the unitary evolution of the input. Complex conjugate must be taken.
-                u = u.conj().T
                 if not self.is_unitary(u):
                     raise ValueError("The provided tensor is not unitary.")
                 param.data[:] = u.reshape((self.chi,) * 4).clone()
@@ -261,8 +259,8 @@ class uMPS(nn.Module):
     def _get_discriminator(self):
         ops = [shape for shape in self.tensor_shapes]
         for i, tensor in enumerate(self.params):
-            ops[self.left_mps_inds[i]] = tensor
-            ops[self.right_mps_inds[i]] = tensor.conj()
+            ops[self.left_mps_inds[i]] = tensor.permute(2, 3, 0, 1).conj()
+            ops[self.right_mps_inds[i]] = tensor.permute(2, 3, 0, 1)
         return oe.contract_expression(self.estr, *ops, constants=self.left_mps_inds + self.right_mps_inds, optimize=self.path)
 
     def forward(self, X: torch.Tensor, label: torch.Tensor | None = None, normalize: bool = True):

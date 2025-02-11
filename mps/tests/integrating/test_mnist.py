@@ -123,7 +123,7 @@ def test_integration_mnist_tpcp_mps():
         d=d,
         l=2,
         layers=1,
-        device="cpu",
+        device=torch.device("cpu"),
         init_with_identity=True
     )
 
@@ -151,7 +151,7 @@ def test_integration_mnist_tpcp_mps():
     
 
     # Check manifold is EXACT
-    assert tpcp_model.manifold == ManifoldType.EXACT, "TPCP model is not using EXACT manifold"
+    assert isinstance(tpcp_model.manifold, geoopt.manifolds.EuclideanStiefelExact), f"TPCP model is not using EXACT manifold {tpcp_model.manifold}"
 
     # --------------------------
     # 5) Define optimizers
@@ -233,7 +233,7 @@ def test_integration_mnist_tpcp_mps():
             umps_params = list(umps_model.parameters())
             tpcp_params = list(tpcp_model.parameters())
             for p_umps, p_tpcp in zip(umps_params, tpcp_params):
-                assert torch.allclose(p_umps.reshape(d**2, d**2).T, p_tpcp, atol=1e-6), \
+                assert torch.allclose(p_umps.reshape(d**2, d**2), p_tpcp, atol=1e-6), \
                     "Model parameters differ between uMPS and MPSTPCP during training."
 
             total_loss_umps += loss_umps.item()
