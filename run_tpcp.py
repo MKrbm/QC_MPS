@@ -163,7 +163,7 @@ def train_tpcp_mnist(
     # 3) Choose Riemannian optimizer
     # --------------------------
     if optimizer_name.lower() == "adam":
-        optimizer = geoopt.optim.RiemannianAdam(model.parameters(), lr=lr)
+        optimizer = geoopt.optim.RiemannianAdam(model.parameters(), lr=lr, eps = 1e-7)
     elif optimizer_name.lower() == "sgd":
         optimizer = geoopt.optim.RiemannianSGD(model.parameters(), lr=lr)
     else:

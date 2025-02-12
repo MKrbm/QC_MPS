@@ -40,7 +40,7 @@ def test_cptp_mps_sgd():
 
     # Create synthetic data
     bs = 3       # batch size
-    N = 2        # number of qubits
+    N = 64        # number of qubits
     data = torch.randn(bs, N, 2, dtype=torch.float64)
     data = data / torch.norm(data, dim=-1, keepdim=True)
     target = torch.randint(0, 2, (bs,), dtype=torch.float64)
@@ -55,13 +55,13 @@ def test_cptp_mps_sgd():
         l=2,
         layers=layers,
         device=torch.device("cpu"),
-        init_with_identity=True
+        init_with_identity=False
     )
     mpstpcp_model = MPSTPCP(
         N=N,
         K=1,
         d=2,
-        with_identity=True,
+        with_identity=False,
         manifold=ManifoldType.EXACT
     )
 
@@ -95,7 +95,7 @@ def test_cptp_mps_sgd():
     optimizer_mpstpcp = geoopt.optim.RiemannianSGD(mpstpcp_model.parameters(), lr=lr)
 
     # Run several optimization steps and check that parameter updates match
-    num_steps = 5
+    num_steps = 100
     for step in range(num_steps):
         optimizer_umps.zero_grad()
         optimizer_mpstpcp.zero_grad()
@@ -155,7 +155,7 @@ def test_cptp_mps_adam():
 
     # Create synthetic data
     bs = 3       # batch size
-    N = 2        # number of qubits
+    N = 64        # number of qubits
     data = torch.randn(bs, N, 2, dtype=torch.float64)
     data = data / torch.norm(data, dim=-1, keepdim=True)
     target = torch.randint(0, 2, (bs,), dtype=torch.float64)
@@ -170,13 +170,13 @@ def test_cptp_mps_adam():
         l=2,
         layers=layers,
         device=torch.device("cpu"),
-        init_with_identity=True
+        init_with_identity=False
     )
     mpstpcp_model = MPSTPCP(
         N=N,
         K=1,
         d=2,
-        with_identity=True,
+        with_identity=False,
         manifold=ManifoldType.EXACT
     )
 

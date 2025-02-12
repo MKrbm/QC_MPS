@@ -6,14 +6,16 @@ def riemannian_gradient(u: torch.Tensor, euc_grad: torch.Tensor) -> torch.Tensor
     """
     Requires square matrices for u and euc_grad.
     """
-    grad = u.T.conj() @ euc_grad
+    # grad = u.T.conj() @ euc_grad
+    grad = euc_grad @ u.T.conj()
     return (grad - grad.T.conj()) / 2
 
 def exp_map(u: torch.Tensor, rg: torch.Tensor) -> torch.Tensor:
     """
     Exponential map on the unitary manifold.
     """
-    res =  u @ torch.linalg.matrix_exp(-rg)
+    # res =  u @ torch.linalg.matrix_exp(-rg)
+    res = torch.linalg.matrix_exp(-rg) @ u
     return closest_unitary(res)
 
 def closest_unitary(u: torch.Tensor) -> torch.Tensor:
@@ -122,12 +124,10 @@ class Adam:
                     # Compute the Riemannian gradient (skew-Hermitian part)
                     gt = riemannian_gradient(u, euc_grad)
 
-                    print("gt : ", gt.reshape(4,4))
 
                     # Update biased first moment estimate
                     self.m[idx] = self.beta1 * self.m[idx] + (1 - self.beta1) * gt.view(unitary.shape)
 
-                    print("m : ", self.m[idx].reshape(4,4))
 
                     # Update biased second raw moment estimate (element-wise square of gradient)
                     gt_squared = gt.abs() ** 2
@@ -135,7 +135,6 @@ class Adam:
                         self.beta2 * self.v[idx] + (1 - self.beta2) * gt_squared.view(unitary.shape)
                     )
 
-                    print("v : ", self.v[idx].reshape(4,4))
 
 
                     # Compute bias-corrected first moment estimate
@@ -147,10 +146,6 @@ class Adam:
 
                     # Compute the update
                     rg = mhat / (torch.sqrt(vhat) + self.epsilon)
-                    print("mhat : ", mhat.reshape(4,4))
-                    print("denom : ", torch.sqrt(vhat).reshape(4,4))
-
-                    print("rg : ", rg.reshape(4,4))
 
                     # Apply the exponential map to update the unitary
                     u_updated = exp_map(u, self.lr * rg.view(chi**2, chi**2))
