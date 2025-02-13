@@ -10,13 +10,14 @@ import torch.utils.data
 import geoopt
 import matplotlib.pyplot as plt
 import time
-
 import sys
 
 # If your mps/ package is local, ensure it’s on sys.path or installed in editable mode:
 # sys.path.append("/path/to/your/project/root")
 
 from mps.tpcp_mps import MPSTPCP, ManifoldType
+from mps.StiefelOptimizers import StiefelAdam, StiefelSGD  # make sure this is importable
+from mps.radam import RiemannianAdam 
 
 
 ###############################################################################
@@ -96,7 +97,7 @@ def train_tpcp_mnist(
 ):
     """
     Fully train an MPSTPCP model on MNIST (digits 0 and 1) with the given parameters:
-      - manifold in {EXACT, FROBENIUS, CANONICAL}
+      - manifold in {EXACT, FROBENIUS, CANONICAL, CAYLEY, MATRIXEXP, FORWARDEULER}
       - optimizer_name in {adam, sgd}
       - K = # of Kraus operators per site
       - batch_size
@@ -141,33 +142,53 @@ def train_tpcp_mnist(
     # --------------------------
     N = img_size * img_size  # 256
     d = 2
-    # Convert string manifold to ManifoldType enum
+    # Extend allowed manifold choices: if the update rule is one of these three, we use the StiefelOptimizers.
     manifold_map = {
-        "EXACT": ManifoldType.EXACT,
-        "FROBENIUS": ManifoldType.FROBENIUS,
-        "CANONICAL": ManifoldType.CANONICAL,
+        "Exact": ManifoldType.EXACT,
+        "Frobenius": ManifoldType.FROBENIUS,
+        "Canonical": ManifoldType.CANONICAL,
+        # For the following update rules we still use the same underlying manifold type.
+        "Cayley": ManifoldType.EXACT,
+        "MatrixExp": ManifoldType.EXACT,
+        "ForwardEuler": ManifoldType.EXACT,
     }
-    if manifold.upper() not in manifold_map:
-        raise ValueError(f"Invalid manifold={manifold}. Use EXACT/FROBENIUS/CANONICAL.")
+    manifold_key = manifold
+    if manifold_key not in manifold_map:
+        raise ValueError(
+            f"Invalid manifold={manifold}. Use one of {list(manifold_map.keys())}."
+        )
 
     model = MPSTPCP(
         N=N,
         K=K,
         d=d,
         with_identity=False,  # or True, depending on your preference
-        manifold=manifold_map[manifold.upper()],
+        manifold=manifold_map[manifold_key],
     )
     model.train()
 
     # --------------------------
     # 3) Choose Riemannian optimizer
     # --------------------------
-    if optimizer_name.lower() == "adam":
-        optimizer = geoopt.optim.RiemannianAdam(model.parameters(), lr=lr, eps = 1e-7)
-    elif optimizer_name.lower() == "sgd":
-        optimizer = geoopt.optim.RiemannianSGD(model.parameters(), lr=lr)
+    # If the chosen manifold update rule is one of these, we use the StiefelOptimizers.
+    if manifold_key in ["Cayley", "MatrixExp", "ForwardEuler"]:
+        if optimizer_name.lower() == "adam":
+            optimizer = StiefelAdam(model.parameters(), lr=lr, expm_method=manifold_key)
+        elif optimizer_name.lower() == "sgd":
+            optimizer = StiefelSGD(model.parameters(), lr=lr, expm_method=manifold_key)
+        else:
+            raise ValueError("optimizer must be 'adam' or 'sgd'")
     else:
-        raise ValueError("optimizer must be 'adam' or 'sgd'")
+        if optimizer_name.lower() == "adam":
+            # optimizer = geoopt.optim.RiemannianAdam(
+            #     model.parameters(), lr=lr, eps=1e-7
+            # )
+            optimizer = RiemannianAdam(model.parameters(), lr=lr)
+            print("RiemannianAdam is used")
+        elif optimizer_name.lower() == "sgd":
+            optimizer = geoopt.optim.RiemannianSGD(model.parameters(), lr=lr)
+        else:
+            raise ValueError("optimizer must be 'adam' or 'sgd'")
 
     # --------------------------
     # 4) Training loop
@@ -195,20 +216,9 @@ def train_tpcp_mnist(
             batch_loss = loss_batch(outputs, target)
             batch_loss.backward()
             optimizer.step()
-            # model.proj_stiefel(check_on_manifold=True, print_log=True)
-            # print(f"Epoch {epoch+1}, Batch {total_batches}, Iteration {total_batches}: Batch Loss = {batch_loss.item():.4f}")
 
-            # Assert if the params are TPCP using geoopt's built-in function
-            # for param in model.parameters():
-            #     p = param.data.clone().reshape(K, d**2, d**2)
-            #     I = torch.zeros(d**2, d**2, dtype=p.dtype, device=p.device)
-            #     for i in range(K):
-            #         I += p[i].T @ p[i]
-            #     print(torch.linalg.norm(I - torch.eye(d**2, dtype=p.dtype, device=p.device)))
-            # if not torch.allclose(I, torch.eye(d**2, dtype=p.dtype, device=p.device)):
-            #     print(f"Parameter is not TPCP at step {step}.")
-            #     print(p)
-            #     raise ValueError("Parameter is not TPCP.")
+            # (Optional) Project parameters back on the Stiefel manifold.
+            model.proj_stiefel(check_on_manifold=True, print_log=False, rtol=1e-3)
 
             # Record batch-wise loss for plotting
             all_losses.append(batch_loss.item())
@@ -216,8 +226,6 @@ def train_tpcp_mnist(
             if torch.isnan(batch_loss).any():
                 print("NaN detected in batch_loss, skipping batch.")
                 continue
-                
-            model.proj_stiefel(check_on_manifold=True, print_log=False, rtol = 1e-3)
 
             # Compute stats
             epoch_loss += batch_loss.item()
@@ -255,15 +263,15 @@ def main():
 
     parser.add_argument(
         "--manifold",
-        default="EXACT",
-        choices=["EXACT", "FROBENIUS", "CANONICAL"],
-        help="Manifold type for Kraus ops (default EXACT).",
+        default="Exact",
+        choices=["Exact", "Frobenius", "Canonical", "Cayley", "MatrixExp", "ForwardEuler"],
+        help="Manifold type (or update rule) for Kraus ops (default Exact).",
     )
     parser.add_argument(
         "--optimizer",
         default="adam",
         choices=["adam", "sgd"],
-        help="Which Riemannian optimizer to use (default Adam).",
+        help="Which Riemannian optimizer to use (default adam).",
     )
     parser.add_argument(
         "--K", type=int, default=1, help="# of Kraus operators per site (default 1)."
@@ -300,7 +308,7 @@ def main():
         "--log_steps",
         type=int,
         default=10,
-        help="Number of steps between logging loss values (default 100).",
+        help="Number of steps between logging loss values (default 10).",
     )
 
     args = parser.parse_args()

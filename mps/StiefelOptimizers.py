@@ -159,7 +159,7 @@ def _update_func_Stiefel_Adam(X, Y, V, X_grad, p_Y, p_V, step, square, a, b, lr,
     if expm_method=='Cayley':
         X.copy_(X.matmul(cayley(xi)))
     elif expm_method=='MatrixExp':
-        X.copy_(p.matmul(torch.matrix_exp(xi)))
+        X.copy_(X.matmul(torch.matrix_exp(xi)))
     elif expm_method=='ForwardEuler':
         X.add_(X@xi)
     else:

@@ -30,6 +30,7 @@ import geoopt
 from mps.tpcp_mps import MPSTPCP, ManifoldType
 from mps import umps
 from mps import unitary_optimizer
+from mps.radam import RiemannianAdam
 
 ###############################################################################
 # Common dataset utilities
@@ -166,9 +167,10 @@ def train_both_models(args):
     # For the uMPS model, use the provided unitary_optimizer.Adam.
     # --------------------------------------------
     if args.optimizer.lower() == "adam":
-        mpstpcp_optimizer = geoopt.optim.RiemannianAdam(
-            mpstpcp_model.parameters(), lr=args.lr
-        )
+        # mpstpcp_optimizer = geoopt.optim.RiemannianAdam(
+        #     mpstpcp_model.parameters(), lr=args.lr
+        # )
+        mpstpcp_optimizer = RiemannianAdam(mpstpcp_model.parameters(), lr=args.lr)
     elif args.optimizer.lower() == "sgd":
         mpstpcp_optimizer = geoopt.optim.RiemannianSGD(
             mpstpcp_model.parameters(), lr=args.lr
@@ -183,7 +185,7 @@ def train_both_models(args):
     # Initialize MPSTPCP model's Kraus operators,
     # then get their parameters and use them to initialize uMPS.
     # --------------------------------------------
-    mpstpcp_model.kraus_ops.init_params()
+    # mpstpcp_model.kraus_ops.init_params()
     # Collect parameters into a list.
     params = list(mpstpcp_model.kraus_ops.parameters())
     # Reshape each parameter to (2,2,2,2) and stack them.
