@@ -22,7 +22,12 @@ class kraus_operators(nn.Module):
     n: int = 2  # number of qubits it acts on.
     L: int  # number of kraus_operator layers.
 
-    def __init__(self, K, L, with_identity: bool = False, init_with: torch.Tensor | None = None, manifold: ManifoldType = ManifoldType.CANONICAL):
+    def __init__(self, 
+                K, 
+                L, 
+                with_identity: bool = False, 
+                init_with: torch.Tensor | None = None, 
+                manifold: ManifoldType = ManifoldType.CANONICAL):
         super().__init__()
 
         if manifold not in ManifoldType:
@@ -30,7 +35,6 @@ class kraus_operators(nn.Module):
 
         self.K = K
         self.L = L
-
         self.act_size = self.d ** self.n
         # self.manifold = geoopt.Stiefel(canonical = (manifold == ManifoldType.CANONICAL))
         if manifold == ManifoldType.EXACT:
@@ -157,7 +161,15 @@ class kraus_operators(nn.Module):
 
 
 class MPSTPCP(nn.Module):
-    def __init__(self, N, K, d=2, with_identity: bool = False, manifold: ManifoldType = ManifoldType.CANONICAL):
+    def __init__(
+        self, 
+        N, 
+        K, 
+        d=2, 
+        with_pros: bool = True,
+        with_identity: bool = False, 
+        manifold: ManifoldType = ManifoldType.CANONICAL
+    ):
         """
         Args:
             N (int): Number of density matrices (batch size).
@@ -168,16 +180,16 @@ class MPSTPCP(nn.Module):
         self.N = N
         self.K = K
         self.d = d  # single-qubit dimension (d=2)
-
+        self.with_pros = with_pros
         self.L = N - 1
 
         self.kraus_ops = kraus_operators(K, L=self.L, with_identity=with_identity, manifold=manifold)
         self.manifold = self.kraus_ops.manifold
 
-        self.r = torch.eye(self.d, dtype=torch.float64, device=self.kraus_ops[0].device)
-        self.r.requires_grad = True
+        self.r = torch.eye(self.d, dtype=torch.float64, device=self.kraus_ops[0].device, requires_grad=True)
 
-        self.mes = torch.tensor([[1, 0], [0, 0]], dtype=torch.float64, device=self.kraus_ops[0].device)
+        self.pros0 = torch.tensor([[1, 0], [0, 0]], dtype=torch.float64, device=self.kraus_ops[0].device)
+        self.pros1 = torch.tensor([[0, 0], [0, 1]], dtype=torch.float64, device=self.kraus_ops[0].device)
 
         self.initialize_W(random_init=False)
 
@@ -193,7 +205,6 @@ class MPSTPCP(nn.Module):
         # self.proj_stiefel(check_on_manifold=True, print_log=True)
 
         batch_size = X.shape[0]
-        self.rhos = []
         rho1 = self.get_rho(X[:, 0])
         rho2 = self.get_rho(X[:, 1])
         init_rho = self.tensor_product(rho1, rho2)
@@ -204,7 +215,6 @@ class MPSTPCP(nn.Module):
                 self.K, self.kraus_ops.act_size, self.kraus_ops.act_size
             )
             rho = self.forward_layer(rho, kraus_ops)
-            self.rhos.append(rho.detach().clone())
 
             if i < self.L - 1:
                 rho = self.partial(rho, 0, self.W[i])
@@ -220,11 +230,15 @@ class MPSTPCP(nn.Module):
             # diag = torch.diagonal(rho_test, dim1=-2, dim2=-1)
             # assert torch.all(diag >= 0), "Some diagonal elements of rho_out are negative."
 
-        self.rhos = torch.stack(self.rhos)
+        mes0 = self.r @ self.pros0 @ self.r.T.conj()
+        mes0_result = torch.einsum("ij,...ji->...", mes0, rho_out)
 
-        # mes = self.r @ self.mes @ self.r.conj()
-        mes = self.mes
-        return torch.einsum("ij,...ji->...", mes, rho_out)
+        if self.with_pros:
+            return mes0_result
+        else:
+            mes1 = self.r @ self.pros1 @ self.r.T.conj()
+            mes1_result = torch.einsum("ij,...ji->...", mes1, rho_out)
+            return torch.stack([mes0_result, mes1_result], dim=-1)
 
     @staticmethod
     def tensor_product(rho1, rho2):
@@ -337,14 +351,14 @@ class MPSTPCP(nn.Module):
 
     def initialize_W(self, init_with: torch.Tensor | None = None, random_init: bool = False):
         if init_with is not None:
-            self.W = nn.Parameter(init_with / init_with.norm(dim=-1, keepdim=True), requires_grad=False)
+            self.W = nn.Parameter(init_with / init_with.norm(dim=-1, keepdim=True), requires_grad=True)
             self.W.data[:] /= self.W.norm(dim=-1, keepdim=True)
         else:
             if random_init:
-                self.W = nn.Parameter(torch.randn(self.L, 2, dtype=torch.float64), requires_grad=False)
+                self.W = nn.Parameter(torch.randn(self.L, 2, dtype=torch.float64), requires_grad=True)
                 self.W.data[:] /= self.W.norm(dim=-1, keepdim=True)
             else:
-                self.W = nn.Parameter(torch.ones(self.L, 2, dtype=torch.float64), requires_grad=False)
+                self.W = nn.Parameter(torch.ones(self.L, 2, dtype=torch.float64), requires_grad=True)
                 self.W.data[:] /= self.W.norm(dim=-1, keepdim=True)
     
     def proj_stiefel(self, check_on_manifold: bool = True, print_log: bool = False, rtol: float = 1e-5):
@@ -403,7 +417,7 @@ class MPSTPCP(nn.Module):
         else:
             return Q
 
-    def set_canonical_mps(self, smps: SimpleMPS):
+    def set_canonical_mps(self, smps: SimpleMPS, set_r: bool = False):
         r"""
         Convert an existing SimpleMPS (with N sites, chi=d=2) into
         a sequence of 2-qubit unitaries (one per MPS bond), and store
@@ -453,32 +467,62 @@ class MPSTPCP(nn.Module):
         assert self.check_point_on_manifold(rtol = 1e-5), "Kraus operators are not on the Stiefel manifold"
 
         # self.mes.data[:] = r @ self.mes @ r.conj().T
+        if set_r:
+            self.r.data[:] = r
+        else:
+            self.r.data[:] = q
 
-        # calculate QR 
-        q, r = torch.linalg.qr(r)
-        unflip = torch.linalg.diagonal(r).sign().add(0.5).sign()
-        q *= unflip[..., None, :]
-        self.mes.data[:] = q @ self.mes @ q.conj().T
+        # if use_r:
+        #     self.mes.data[:] = r @ self.mes @ r.conj().T
+        # else:
+        #     # calculate QR 
+        #     q, r = torch.linalg.qr(r)
+        #     unflip = torch.linalg.diagonal(r).sign().add(0.5).sign()
+        #     q *= unflip[..., None, :]
+        #     self.mes.data[:] = q @ self.mes @ q.conj().T
+    
 
 
-        #compensate for the sign of r
+def regularize_weight(w, eps=1e-12):
+    """
+    Computes a regularization term based on the log of the ratio Var(W)/E(W)
+    of the post-selection success rate when the input state is uniform.
+    
+    Here, W = ∏_i w_i(x_i) is a product of weight functions evaluated on 
+    uniformly distributed bit outcomes (with each bit taking 0 or 1 with probability 1/2).
+    
+    For each layer i (with weight vector w_i = [w_i(0), w_i(1)]), define:
+        μ_i = (w_i(0) + w_i(1)) / 2
+        ν_i = (w_i(0)^2 + w_i(1)^2) / 2
+    
+    Then:
+        E[W]  = ∏_i μ_i,
+        E[W^2] = ∏_i ν_i,
+        Var(W) = E[W^2] - (E[W])^2.
+    
+    A compact expression for the ratio is:
+        Var(W)/E[W] = ∏_i ( (w_i(0)^2+w_i(1)^2) / (w_i(0)+w_i(1)) ) - ∏_i ((w_i(0)+w_i(1))/2)
+    
+    Args:
+        w (torch.Tensor): Tensor of shape (L, 2), where L is the number of layers.
+        eps (float): A small number added for numerical stability.
         
+    Returns:
+        torch.Tensor: A scalar representing log(Var(W)/E[W] + eps).
+    """
 
-        # shift and scale the mes so that the trace is 0
-        # idt = torch.eye(self.d, dtype=self.mes.dtype, device=self.mes.device)
-        # mes_p = r @ idt @ r.conj().T
-        # trace = torch.trace(mes_p)
+    L = w.shape[0]
+    if w.shape != (L, 2):
+        raise ValueError(f"Expected w to have shape ({L}, 2), but got {w.shape}.")
+    
+    if not torch.allclose(torch.norm(w, dim=1), torch.ones(L, device=w.device, dtype=w.dtype), atol=1e-6):
+        raise ValueError("The norm of each row in w must be 1.")
+    
+    w_4 = w**4
 
-
-
-
-
-        # self.mes.data[:] = self.mes / (trace / self.d)
-
-        # mes = self.mes
-        # trace = torch.trace(mes)
-        # mes = mes - trace / self.d
-        # mes = mes / (torch.norm(mes) / np.sqrt(self.d))
-        # self.mes.data[:] = mes
-
-
+    return torch.log(w_4.sum(dim=1)).mean() + np.log(2) # np.log(2) to shift the origin to 0
+    
+    
+    
+    
+    
