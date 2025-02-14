@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--manifold", type=str, default="Exact", choices=["Exact", "Frobenius", "Canonical", "Cayley", "MatrixExp", "ForwardEuler", "Original"], help="Manifold type.")
     parser.add_argument("--optimizer", type=str, default="adam", choices=["adam", "sgd"], help="Optimizer (default adam).")
     parser.add_argument("--lr", type=float, default=0.01, help="Learning rate (default 0.01).")
+    parser.add_argument("--simple_lr", type=float, default=0.001, help="Learning rate (default 0.01).")
     parser.add_argument("--log_steps", type=int, default=10, help="Log steps (default 10).")
     parser.add_argument("--num_data", type=int, default=None, help="Number of samples (default 10000).")
     parser.add_argument("--seed", type=int, default=None, help="Random seed (optional).")
@@ -60,9 +61,8 @@ def main():
         N=args.n,
         d=2,
         l=2,
-        layers=2,
-        simple_epochs=args.simple_epochs,
-        simple_lr=0.001,
+        mps_epochs=args.simple_epochs,
+        mps_lr=args.simple_lr,
         mps_optimize="greedy",
         manifold=args.manifold,
         optimizer_name=args.optimizer,

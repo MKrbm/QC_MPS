@@ -166,7 +166,7 @@ class MPSTPCP(nn.Module):
         N, 
         K, 
         d=2, 
-        with_pros: bool = True,
+        with_probs: bool = True,
         with_identity: bool = False, 
         manifold: ManifoldType = ManifoldType.CANONICAL
     ):
@@ -180,7 +180,7 @@ class MPSTPCP(nn.Module):
         self.N = N
         self.K = K
         self.d = d  # single-qubit dimension (d=2)
-        self.with_pros = with_pros
+        self.with_probs = with_probs
         self.L = N - 1
 
         self.kraus_ops = kraus_operators(K, L=self.L, with_identity=with_identity, manifold=manifold)
@@ -233,7 +233,7 @@ class MPSTPCP(nn.Module):
         mes0 = self.r @ self.pros0 @ self.r.T.conj()
         mes0_result = torch.einsum("ij,...ji->...", mes0, rho_out)
 
-        if self.with_pros:
+        if self.with_probs:
             return mes0_result
         else:
             mes1 = self.r @ self.pros1 @ self.r.T.conj()
@@ -417,7 +417,7 @@ class MPSTPCP(nn.Module):
         else:
             return Q
 
-    def set_canonical_mps(self, smps: SimpleMPS, set_r: bool = False):
+    def set_canonical_mps(self, smps: SimpleMPS):
         r"""
         Convert an existing SimpleMPS (with N sites, chi=d=2) into
         a sequence of 2-qubit unitaries (one per MPS bond), and store
@@ -467,10 +467,8 @@ class MPSTPCP(nn.Module):
         assert self.check_point_on_manifold(rtol = 1e-5), "Kraus operators are not on the Stiefel manifold"
 
         # self.mes.data[:] = r @ self.mes @ r.conj().T
-        if set_r:
+        if not self.with_probs:
             self.r.data[:] = r
-        else:
-            self.r.data[:] = q
 
         # if use_r:
         #     self.mes.data[:] = r @ self.mes @ r.conj().T

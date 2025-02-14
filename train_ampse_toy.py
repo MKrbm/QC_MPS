@@ -196,7 +196,7 @@ def train_tpcp_synthetic(
     if manifold not in manifold_map:
         raise ValueError(f"Invalid manifold='{manifold}'. Valid options: {list(manifold_map.keys())}.")
 
-    tpcp = MPSTPCP(N, K=K, d=2, with_pros=False, with_identity=True, manifold=manifold_map[manifold])
+    tpcp = MPSTPCP(N, K=K, d=2, with_probs=False, with_identity=True, manifold=manifold_map[manifold])
     tpcp.to(device)
     tpcp.train()
     # Optionally initialize TPCP from the SimpleMPS (canonical form)

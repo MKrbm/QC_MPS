@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 ###############################################################################
 # MNIST Dataset Creation Utility
@@ -73,3 +74,20 @@ def create_mnist_dataloader(
     # Create and return the DataLoader.
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     return dataloader
+
+class SyntheticDataset(torch.utils.data.Dataset):
+    def __init__(self, n: int, num_samples: int = 10000, seed: int | None = None):
+        self.n = n
+        self.num_samples = num_samples
+        if seed is not None:
+            np.random.seed(seed)
+        self.labels = np.random.randint(0, 2, size=num_samples).astype(np.int64)
+    def __len__(self):
+        return self.num_samples
+    def __getitem__(self, index):
+        l = self.labels[index]
+        x = torch.zeros(self.n, dtype=torch.float64)
+        x[0] = float(l)
+        x_embedded = torch.stack([x, 1 - x], dim=-1)
+        x_embedded = x_embedded / (x_embedded.sum(dim=-1, keepdim=True).clamp(min=1e-8))
+        return x_embedded, torch.tensor(l, dtype=torch.int64)

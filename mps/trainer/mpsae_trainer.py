@@ -24,9 +24,8 @@ def mpsae_train(
     N,
     d=2,
     l=2,
-    layers=2,
-    simple_epochs=1,
-    simple_lr=0.001,
+    mps_epochs=1,
+    mps_lr=0.001,
     mps_optimize="greedy",
     manifold="Exact",
     optimizer_name="adam",
@@ -57,14 +56,14 @@ def mpsae_train(
         weight_values = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1]
 
     # --- 1) Train SimpleMPS ---
-    smps = SimpleMPS(N, 2, d, l, layers=layers, device=device, dtype=dtype, optimize=mps_optimize)
+    smps = SimpleMPS(N, 2, d, l, layers=1, device=device, dtype=dtype, optimize=mps_optimize)
     logsoftmax = torch.nn.LogSoftmax(dim=-1)
     nnloss = torch.nn.NLLLoss(reduction="mean")
-    opt_smps = torch.optim.Adam(smps.parameters(), lr=simple_lr)
+    opt_smps = torch.optim.Adam(smps.parameters(), lr=mps_lr)
     smps_losses = []
     smps.train()
-    print(f"\n=== Training SimpleMPS for {simple_epochs} epoch(s)... ===")
-    for epoch in range(simple_epochs):
+    print(f"\n=== Training SimpleMPS for {mps_epochs} epoch(s)... ===")
+    for epoch in range(mps_epochs):
         total_loss = 0.0
         total_samples = 0
         total_correct = 0
@@ -99,12 +98,33 @@ def mpsae_train(
     }
     if manifold not in manifold_map:
         raise ValueError(f"Invalid manifold='{manifold}'.")
-    tpcp = MPSTPCP(N, K=K, d=2, with_pros=False, with_identity=True, manifold=manifold_map[manifold])
+    tpcp = MPSTPCP(N, K=K, d=2, with_probs=False, with_identity=True, manifold=manifold_map[manifold])
+
+    # Create optimizer for TPCP.
+    if manifold in ["Cayley", "MatrixExp", "ForwardEuler"]:
+        if optimizer_name.lower() == "adam":
+            opt_tpcp = StiefelAdam(tpcp.kraus_ops.parameters(), lr=lr, expm_method=manifold)
+        elif optimizer_name.lower() == "sgd":
+            opt_tpcp = StiefelSGD(tpcp.kraus_ops.parameters(), lr=lr, expm_method=manifold)
+        else:
+            raise ValueError("optimizer must be 'adam' or 'sgd'")
+    elif manifold in ["Exact", "Frobenius", "Canonical"]:
+        if optimizer_name.lower() == "adam":
+            opt_tpcp = geoopt.optim.RiemannianAdam(tpcp.kraus_ops.parameters(), lr=lr)
+        elif optimizer_name.lower() == "sgd":
+            opt_tpcp = geoopt.optim.RiemannianSGD(tpcp.kraus_ops.parameters(), lr=lr)
+        else:
+            raise ValueError("optimizer must be 'adam' or 'sgd'")
+    elif manifold == "Original":
+        if optimizer_name.lower() == "adam":
+            opt_tpcp = RiemannianAdam(tpcp.kraus_ops.parameters(), lr=lr)
+        else:
+            raise ValueError("SGD not supported for Original update rule.")
+
     tpcp.to(device)
     tpcp.train()
     tpcp.set_canonical_mps(smps)
-
-    tpcp_metrics_by_w = {}
+    metrics = {"loss": [], "accuracy": [], "weight_rate": []}
 
     for w in weight_values:
         W = torch.zeros(tpcp.L, 2, dtype=dtype, device=device)
@@ -115,27 +135,6 @@ def mpsae_train(
         epoch = 0
         prev_epoch_loss = None
         conv_counter = 0
-        metrics = {"loss": [], "accuracy": [], "weight_rate": []}
-        # Create optimizer for TPCP.
-        if manifold in ["Cayley", "MatrixExp", "ForwardEuler"]:
-            if optimizer_name.lower() == "adam":
-                opt_tpcp = StiefelAdam(tpcp.kraus_ops.parameters(), lr=lr, expm_method=manifold)
-            elif optimizer_name.lower() == "sgd":
-                opt_tpcp = StiefelSGD(tpcp.kraus_ops.parameters(), lr=lr, expm_method=manifold)
-            else:
-                raise ValueError("optimizer must be 'adam' or 'sgd'")
-        elif manifold in ["Exact", "Frobenius", "Canonical"]:
-            if optimizer_name.lower() == "adam":
-                opt_tpcp = geoopt.optim.RiemannianAdam(tpcp.kraus_ops.parameters(), lr=lr)
-            elif optimizer_name.lower() == "sgd":
-                opt_tpcp = geoopt.optim.RiemannianSGD(tpcp.kraus_ops.parameters(), lr=lr)
-            else:
-                raise ValueError("optimizer must be 'adam' or 'sgd'")
-        elif manifold == "Original":
-            if optimizer_name.lower() == "adam":
-                opt_tpcp = RiemannianAdam(tpcp.kraus_ops.parameters(), lr=lr)
-            else:
-                raise ValueError("SGD not supported for Original update rule.")
         while epoch < max_epochs:
             epoch_loss_sum = 0.0
             total_samples = 0
@@ -184,20 +183,10 @@ def mpsae_train(
                         break
             prev_epoch_loss = avg_loss
             epoch += 1
-        tpcp_metrics_by_w[w] = metrics
 
-    # --- Plot aggregated metrics ---
-    all_loss = []
-    all_accuracy = []
-    all_weight_ratio = []
-    for w_val in sorted(tpcp_metrics_by_w.keys()):
-        mtr = tpcp_metrics_by_w[w_val]
-        all_loss.extend(mtr["loss"])
-        all_accuracy.extend(mtr["accuracy"])
-        all_weight_ratio.extend(mtr["weight_rate"])
-    x_axis = range(1, len(all_loss) + 1)
-    plot_training_metrics(x_axis, all_loss, all_accuracy, all_weight_ratio,
+    x_axis = range(1, len(metrics["loss"]) + 1)
+    plot_training_metrics(x_axis, metrics["loss"], metrics["accuracy"], metrics["weight_rate"],
                             "MPSAE Training Metrics over Epochs",
                             "mpsae_training_metrics.png")
     
-    return {"simple_mps_losses": smps_losses, "tpcp_metrics_by_w": tpcp_metrics_by_w}
+    return {"simple_mps_losses": smps_losses, "tpcp_metrics_by_w": metrics}
