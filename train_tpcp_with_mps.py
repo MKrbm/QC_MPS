@@ -413,20 +413,62 @@ def main():
     # --------------------------
     # Plotting: For each w value, plot loss, accuracy, and weight_rate on the same axes.
     # --------------------------
+    from mpl_toolkits.axes_grid1 import host_subplot
+    import mpl_toolkits.axisartist as AA
+
+    # --------------------------
+    # Modified Plotting: All metrics in one figure as a continuous stream
+    # --------------------------
     tpcp_metrics_by_w = results["tpcp_metrics_by_w"]
-    n_plots = len(tpcp_metrics_by_w)
-    fig, axs = plt.subplots(n_plots, 1, figsize=(10, 5 * n_plots), squeeze=False)
-    for idx, (w_val, metrics) in enumerate(tpcp_metrics_by_w.items()):
-        ax = axs[idx, 0]
-        epochs_range = range(1, len(metrics["loss"]) + 1)
-        ax.plot(epochs_range, metrics["loss"], label="Loss", marker="o")
-        ax.plot(epochs_range, metrics["accuracy"], label="Accuracy", marker="s")
-        ax.plot(epochs_range, metrics["weight_rate"], label="Weight Rate", marker="^")
-        ax.set_title(f"TPCP Metrics for w = {w_val}")
-        ax.set_xlabel("Epoch")
-        ax.legend()
-    plt.tight_layout()
+
+    # Flatten metrics from different weight runs in the order of increasing w.
+    # (This assumes that the training runs were performed sequentially.)
+    all_loss = []
+    all_accuracy = []
+    all_weight_ratio = []
+    for w_val in sorted(tpcp_metrics_by_w.keys()):
+        metrics = tpcp_metrics_by_w[w_val]
+        all_loss.extend(metrics["loss"])
+        all_accuracy.extend(metrics["accuracy"])
+        all_weight_ratio.extend(metrics["weight_rate"])
+
+    # Create a cumulative x-axis: one unit per epoch across all weight values.
+    x_axis = range(1, len(all_loss) + 1)
+
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+
+    ax2 = ax1.twinx()
+    ax3 = ax1.twinx()
+
+    # Offset the right spine of ax3. The ticks and label have already been
+    # placed on the right by twinx above.
+    ax3.spines['right'].set_position(('outward', 60))
+
+    ax1.plot(x_axis, all_loss, label="Loss", marker="o", color='tab:blue')
+    ax2.plot(x_axis, all_accuracy, label="Accuracy", marker="s", color='tab:orange')
+    ax3.plot(x_axis, all_weight_ratio, label="Weight Ratio", marker="^", color='tab:green')
+
+    ax1.set_xlabel("Epoch (Cumulative)")
+    ax1.set_ylabel("Loss", color='tab:blue')
+    ax2.set_ylabel("Accuracy", color='tab:orange')
+    ax3.set_ylabel("Weight Ratio", color='tab:green')
+
+    ax1.tick_params(axis='y', labelcolor='tab:blue')
+    ax2.tick_params(axis='y', labelcolor='tab:orange')
+    ax3.tick_params(axis='y', labelcolor='tab:green')
+
+    ax2.set_ylim(0, 1)  # Set accuracy range from 0 to 1
+
+    fig.suptitle("Training Metrics (Loss, Accuracy, Weight Ratio) over Epochs")
+    fig.tight_layout()
+
+    # Save the figure
+    plt.savefig("training_metrics.png")
+
     plt.show()
+
+
+
 
 
 if __name__ == "__main__":
