@@ -16,7 +16,7 @@ from mps.StiefelOptimizers import StiefelAdam, StiefelSGD
 from mps.radam import RiemannianAdam
 
 # Import common utilities.
-from utils import loss_batch, calculate_accuracy, to_probs, plot_training_metrics
+from mps.trainer.utils import loss_batch, calculate_accuracy, to_probs, plot_training_metrics
 
 def mpsae_train(
     dataloader,
@@ -46,7 +46,7 @@ def mpsae_train(
     
     1. Trains a SimpleMPS on the provided dataloader.
     2. Initializes TPCP.
-    3. Adiabatically interpolates between SimpleMPS and TPCP.
+    3. Adiabatically interpolates between W = 0 and W= 1.
     
     Returns:
       dict with keys:

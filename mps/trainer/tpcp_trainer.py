@@ -6,14 +6,13 @@ Defines the tpcp_train() function.
 
 import time
 import torch
-import matplotlib.pyplot as plt
 import geoopt
 
 from mps.tpcp_mps import MPSTPCP, ManifoldType
 from mps.StiefelOptimizers import StiefelAdam, StiefelSGD
 from mps.radam import RiemannianAdam
 
-from utils import loss_batch, calculate_accuracy, plot_training_metrics
+from mps.trainer.utils import loss_batch, calculate_accuracy, plot_training_metrics
 
 def tpcp_train(
     dataloader,
@@ -32,7 +31,7 @@ def tpcp_train(
     """
     Train a TPCP MPS model (for example, on MNIST).
     
-    Returns a list of batch losses and displays a loss curve.
+    Returns a list of batch losses and displays training metrics.
     """
     manifold_map = {
         "Exact": ManifoldType.EXACT,
@@ -67,7 +66,11 @@ def tpcp_train(
             optimizer = RiemannianAdam(model.parameters(), lr=lr)
         else:
             raise ValueError("SGD not supported for Original update rule.")
-    all_losses = []
+
+    all_losses = []      # List of loss for each batch.
+    epoch_losses = []    # List to store average loss per epoch.
+    epoch_accs = []      # List to store average accuracy per epoch.
+    
     for epoch in range(epochs):
         epoch_loss = 0.0
         epoch_acc = 0.0
@@ -93,13 +96,13 @@ def tpcp_train(
         avg_loss = epoch_loss / total_batches if total_batches else float("nan")
         avg_acc = epoch_acc / total_batches if total_batches else float("nan")
         print(f"Epoch {epoch+1}/{epochs} | Avg Loss: {avg_loss:.6f} | Avg Acc: {avg_acc:.2%}")
-    # Plot training loss curve.
-    plt.figure(figsize=(8,5))
-    plt.plot(all_losses, label="Training Loss")
-    plt.xlabel("Iteration (batch)")
-    plt.ylabel("Loss")
-    plt.title("TPCP Training Loss Curve")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
+        epoch_losses.append(avg_loss)
+        epoch_accs.append(avg_acc)
+    
+    # Use the utility function to plot training metrics.
+    x_axis = list(range(1, epochs + 1))
+    title = "TPCP Training Metrics"
+    filename = "tpcp_training_metrics.png"  # Adjust the filename/path as needed.
+    plot_training_metrics(x_axis, epoch_losses, epoch_accs, None, title, filename)
+    
     return all_losses
