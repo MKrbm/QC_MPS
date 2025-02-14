@@ -171,6 +171,7 @@ for w in [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1]:
             loss.backward()
             optimizer.step()
             acc = calculate_accuracy(outputs, target)
+            tpcp.proj_stiefel(check_on_manifold=True, print_log=False, rtol=1e-3)
             acc_tot += acc
             loss_tot += loss.item()
             if batch_idx % 10 == 0:
