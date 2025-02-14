@@ -151,6 +151,7 @@ def train_tpcp_mnist(
         "Cayley": ManifoldType.EXACT,
         "MatrixExp": ManifoldType.EXACT,
         "ForwardEuler": ManifoldType.EXACT,
+        "Original": ManifoldType.EXACT,
     }
     manifold_key = manifold
     if manifold_key not in manifold_map:
@@ -178,15 +179,22 @@ def train_tpcp_mnist(
             optimizer = StiefelSGD(model.parameters(), lr=lr, expm_method=manifold_key)
         else:
             raise ValueError("optimizer must be 'adam' or 'sgd'")
-    else:
+    elif manifold_key in ["EXACT", "FROBENIUS", "CANONICAL"]:
         if optimizer_name.lower() == "adam":
-            # optimizer = geoopt.optim.RiemannianAdam(
-            #     model.parameters(), lr=lr, eps=1e-7
-            # )
-            optimizer = RiemannianAdam(model.parameters(), lr=lr)
-            print("RiemannianAdam is used")
+            optimizer = geoopt.optim.RiemannianAdam(
+                model.parameters(), lr=lr, eps=1e-7
+            )
+            # optimizer = RiemannianAdam(model.parameters(), lr=lr)
+            # print("RiemannianAdam is used")
         elif optimizer_name.lower() == "sgd":
             optimizer = geoopt.optim.RiemannianSGD(model.parameters(), lr=lr)
+        else:
+            raise ValueError("optimizer must be 'adam' or 'sgd'")
+    elif manifold_key in ["ORIGINAL"]:
+        if optimizer_name.lower() == "adam":
+            optimizer = RiemannianAdam(model.parameters(), lr=lr)
+        elif optimizer_name.lower() == "sgd":
+            raise ValueError("SGD is not supported for the original update rule.")
         else:
             raise ValueError("optimizer must be 'adam' or 'sgd'")
 

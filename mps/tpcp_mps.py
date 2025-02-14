@@ -222,7 +222,8 @@ class MPSTPCP(nn.Module):
 
         self.rhos = torch.stack(self.rhos)
 
-        mes = self.r @ self.mes @ self.r.conj()
+        # mes = self.r @ self.mes @ self.r.conj()
+        mes = self.mes
         return torch.einsum("ij,...ji->...", mes, rho_out)
 
     @staticmethod
@@ -336,14 +337,14 @@ class MPSTPCP(nn.Module):
 
     def initialize_W(self, init_with: torch.Tensor | None = None, random_init: bool = False):
         if init_with is not None:
-            self.W = nn.Parameter(init_with / init_with.norm(dim=-1, keepdim=True), requires_grad=True)
+            self.W = nn.Parameter(init_with / init_with.norm(dim=-1, keepdim=True), requires_grad=False)
             self.W.data[:] /= self.W.norm(dim=-1, keepdim=True)
         else:
             if random_init:
-                self.W = nn.Parameter(torch.randn(self.L, 2, dtype=torch.float64), requires_grad=True)
+                self.W = nn.Parameter(torch.randn(self.L, 2, dtype=torch.float64), requires_grad=False)
                 self.W.data[:] /= self.W.norm(dim=-1, keepdim=True)
             else:
-                self.W = nn.Parameter(torch.ones(self.L, 2, dtype=torch.float64), requires_grad=True)
+                self.W = nn.Parameter(torch.ones(self.L, 2, dtype=torch.float64), requires_grad=False)
                 self.W.data[:] /= self.W.norm(dim=-1, keepdim=True)
     
     def proj_stiefel(self, check_on_manifold: bool = True, print_log: bool = False, rtol: float = 1e-5):
@@ -451,5 +452,33 @@ class MPSTPCP(nn.Module):
 
         assert self.check_point_on_manifold(rtol = 1e-5), "Kraus operators are not on the Stiefel manifold"
 
-        # self.r.data[:] = r
+        # self.mes.data[:] = r @ self.mes @ r.conj().T
+
+        # calculate QR 
+        q, r = torch.linalg.qr(r)
+        unflip = torch.linalg.diagonal(r).sign().add(0.5).sign()
+        q *= unflip[..., None, :]
+        self.mes.data[:] = q @ self.mes @ q.conj().T
+
+
+        #compensate for the sign of r
+        
+
+        # shift and scale the mes so that the trace is 0
+        # idt = torch.eye(self.d, dtype=self.mes.dtype, device=self.mes.device)
+        # mes_p = r @ idt @ r.conj().T
+        # trace = torch.trace(mes_p)
+
+
+
+
+
+        # self.mes.data[:] = self.mes / (trace / self.d)
+
+        # mes = self.mes
+        # trace = torch.trace(mes)
+        # mes = mes - trace / self.d
+        # mes = mes / (torch.norm(mes) / np.sqrt(self.d))
+        # self.mes.data[:] = mes
+
 
