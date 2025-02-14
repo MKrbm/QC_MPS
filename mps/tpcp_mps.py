@@ -7,6 +7,7 @@ from pathlib import Path
 from scipy.stats import unitary_group, ortho_group
 import geoopt  # Added for Geoopt functionalities
 from enum import Enum
+from mps.simple_mps import SimpleMPS
 
 class ManifoldType(Enum):
     CANONICAL = "canonical"
@@ -169,8 +170,16 @@ class MPSTPCP(nn.Module):
         self.d = d  # single-qubit dimension (d=2)
 
         self.L = N - 1
+
         self.kraus_ops = kraus_operators(K, L=self.L, with_identity=with_identity, manifold=manifold)
         self.manifold = self.kraus_ops.manifold
+
+        self.r = torch.eye(self.d, dtype=torch.float64, device=self.kraus_ops[0].device)
+        self.r.requires_grad = True
+
+        self.mes = torch.tensor([[1, 0], [0, 0]], dtype=torch.float64, device=self.kraus_ops[0].device)
+
+        self.initialize_W(random_init=False)
 
     def forward(self, X, normalize: bool = True):
         """
@@ -198,12 +207,12 @@ class MPSTPCP(nn.Module):
             self.rhos.append(rho.detach().clone())
 
             if i < self.L - 1:
-                rho = self.partial(rho, 0)
+                rho = self.partial(rho, 0, self.W[i])
                 next_rho = self.get_rho(X[:, i + 2])
                 rho = self.tensor_product(rho, next_rho)
 
             # Start of Selection
-        rho_out = self.partial(rho, 0)
+        rho_out = self.partial(rho, 0, self.W[self.L - 1])
 
             # rho_test = rho_out[0, :, :]
             # trace = torch.trace(rho_test)
@@ -212,7 +221,9 @@ class MPSTPCP(nn.Module):
             # assert torch.all(diag >= 0), "Some diagonal elements of rho_out are negative."
 
         self.rhos = torch.stack(self.rhos)
-        return rho_out[..., 0, 0]
+
+        mes = self.r @ self.mes @ self.r.conj()
+        return torch.einsum("ij,...ji->...", mes, rho_out)
 
     @staticmethod
     def tensor_product(rho1, rho2):
@@ -262,32 +273,78 @@ class MPSTPCP(nn.Module):
         new_rho = out.sum(dim=0)  # Sum over the Kraus index K => (N, d, d)
         return new_rho
 
-    def partial(self, rho, site):
+    def partial(self, rho, site, weight):
         """
         Perform a partial trace over one qubit (site=0 or site=1)
-        for a batch of two-qubit states.
-        
-        - rho.shape = (N, d^2, d^2)   # e.g. d^2=4 for 2 qubits
-        - site=0 means trace out qubit 0
-        - site=1 means trace out qubit 1
+        for a batch of two-qubit states, possibly *weighted* by `weight`.
 
-        Returns: a batch of single-qubit density matrices with shape (N, d, d).
-                 (Here, d=2.)
+        - rho.shape = (batch_size, d^2, d^2)   # e.g. d^2=4 if 2 qubits
+        - site = 0 or 1 indicates which qubit to trace out.
+        - weight (torch.Tensor or None):
+            If None, do the usual partial trace.
+            If not None, must be shape (2,) with sum(weight) = 1, 
+            and we multiply each 'component' of the partial trace by weight[a].
+        Returns:
+            reduced_rho of shape (batch_size, d, d), i.e. a single-qubit density matrix.
         """
         batch_size = rho.shape[0]
-        assert rho.shape == (batch_size, self.d**2, self.d**2), f"rho must be a tensor of shape (batch_size, {self.d**2}, {self.d**2})"
+        assert rho.shape == (batch_size, self.d**2, self.d**2), (
+            f"rho must be (batch_size, {self.d**2}, {self.d**2}), got {rho.shape}"
+        )
 
-        # Reshape => (N, d, d, d, d)
+        # assert torch.allclose(torch.norm(weight), torch.tensor(1.0, dtype=weight.dtype, device=weight.device), atol=1e-10), f"weight must sum to 1, got {weight}"
+        # assert torch.isclose(weight.norm(), torch.tensor(1.0, dtype=weight.dtype, device=weight.device)), f"weight must sum to 1, got {weight}"
+        import numpy as np
+        if weight is not None:
+            assert np.isclose(np.linalg.norm(weight.detach().cpu().numpy()), 1.0, atol=1e-10), f"weight must sum to 1, got {weight}"
+        # print(weight.norm() - 1)
+
+        # Reshape => (batch_size, d, d, d, d)
+        # We can call these indices: (n, a, b, c, d).
+        # But we'll just match your original naming pattern:
         rho_reshaped = rho.reshape(batch_size, self.d, self.d, self.d, self.d)
 
+        # The idea:
+        #   * site=0 => trace out the first qubit index => "n a c a d -> n c d"
+        #   * site=1 => trace out the second qubit index => "n a c b c -> n a b"
+        #
+        # Weighted partial trace means we multiply the summand by weight[a] or weight[b].
+
         if site == 0:
-            reduced = torch.einsum("n a c a d -> n c d", rho_reshaped)
+            # Weighted partial trace
+            # "n a c a d, a -> n c d"
+            # i.e. sum over 'a' but multiply each slice by weight[a]
+            assert weight.shape == (2,), f"weight must be shape (2,), got {weight.shape}"
+            reduced = torch.einsum("n a c a d, a->n c d", rho_reshaped, weight ** 2)
+
         elif site == 1:
-            reduced = torch.einsum("n a c b c -> n a b", rho_reshaped)
+            # Weighted partial trace
+            # multiply each slice by weight[b]
+            # We'll follow the same index pattern: "n a c b c, b -> n a c"
+            # then rename 'c' -> 'b' so shape is (n, a, b).
+            assert weight.shape == (2,), f"weight must be shape (2,), got {weight.shape}"
+            reduced = torch.einsum("n a c b c, c->n a b", rho_reshaped, weight ** 2)
+            # rename dimension to have shape (n, a, b):
+            # in practice you can just keep it as is, or rename with .reshape(n, d, d).
+            # We'll do the explicit reshape:
+            reduced = reduced.reshape(batch_size, self.d, self.d)
         else:
             raise ValueError("site must be 0 or 1 for a 2-qubit system.")
 
-        return reduced
+        # print(reduced.shape)
+        return reduced / torch.einsum("nii->n", reduced).unsqueeze(-1).unsqueeze(-1)
+
+    def initialize_W(self, init_with: torch.Tensor | None = None, random_init: bool = False):
+        if init_with is not None:
+            self.W = nn.Parameter(init_with / init_with.norm(dim=-1, keepdim=True), requires_grad=True)
+            self.W.data[:] /= self.W.norm(dim=-1, keepdim=True)
+        else:
+            if random_init:
+                self.W = nn.Parameter(torch.randn(self.L, 2, dtype=torch.float64), requires_grad=True)
+                self.W.data[:] /= self.W.norm(dim=-1, keepdim=True)
+            else:
+                self.W = nn.Parameter(torch.ones(self.L, 2, dtype=torch.float64), requires_grad=True)
+                self.W.data[:] /= self.W.norm(dim=-1, keepdim=True)
     
     def proj_stiefel(self, check_on_manifold: bool = True, print_log: bool = False, rtol: float = 1e-5):
         """
@@ -313,3 +370,86 @@ class MPSTPCP(nn.Module):
                     print(f"Kraus operator is not on the Stiefel manifold: {reason}")
                 return False
         return True
+
+    @staticmethod
+    def embed_isometry(v):
+        """
+        v is a vector in R^d
+
+
+        convert isometry to unitary
+        ┌───┐
+        * -│   │
+        * -│ V │- * 
+        └───┘
+
+        ┌───┐
+        * -│   │- |0>
+        * -│U  │- * 
+        └───┘
+        """
+        assert len(v.shape) == 3
+        d = v.shape[0]
+        i = torch.einsum("abc, abd->cd", v, v)
+        assert torch.allclose(i, torch.eye(d, dtype=v.dtype, device=v.device))
+        V = torch.empty((d, d, d, d), dtype=v.dtype, device=v.device)
+        V[:, :, 0, :] = v
+        Q,R = torch.linalg.qr(V.reshape(d**2, d**2), mode="complete")
+        Q = Q.reshape(d, d, d, d)
+
+        if not torch.allclose(Q[:, :, 0, :], v, atol=1e-5):
+            raise ValueError("QR decomposition failed")
+        else:
+            return Q
+
+    def set_canonical_mps(self, smps: SimpleMPS):
+        r"""
+        Convert an existing SimpleMPS (with N sites, chi=d=2) into
+        a sequence of 2-qubit unitaries (one per MPS bond), and store
+        these unitaries as Kraus operators (K=1) in this TPCP model.
+
+        This closely follows the logic of `_set_canonical_mps` in the
+        HuMPS class, but adapts it for TPCP usage:
+
+        1) call `smps.mps.convert_to_canonical()`,
+        2) build isometries for the interior bonds,
+        3) merge the left boundary and right boundary via einsum & QR,
+        4) reshape each resulting rank-4 tensor (2,2,2,2) into (4,4),
+        5) unitarize via QR,
+        6) copy into self.kraus_ops[l].
+
+        *Assumes* self.K == 1, self.L == N-1, d=2, chi=2, etc.
+        """
+        # 1) Basic dimension checks
+        if smps.N != self.N:
+            raise ValueError(f"MPS N={smps.N}, but TPCP N={self.N}.")
+        if smps.d != 2 or smps.chi != 2:
+            raise ValueError("This method assumes d=2, chi=2.")
+        if self.K != 1:
+            raise NotImplementedError("Only supports K=1 (unitary channel).")
+
+        # 2) Convert the MPS to canonical form
+        #    Typically returns a list of N tensors, e.g. for N=4:
+        #    params[0] ~ (1, 2, 2),  params[-1] ~ (2, 2, 1), middle ones ~ (2, 2, 2).
+        params = smps.mps.convert_to_canonical()
+        if len(params) != self.N + 1: # +1 include for the target state
+            raise RuntimeError(f"Expected {self.N + 1} canonical tensors, got {len(params)}.")
+        
+        MPS_list = [self.embed_isometry(m.clone()) for m in params[1:-1]]
+        uU = torch.einsum("ak,kbcd->abcd",params[0], MPS_list[0])
+        MPS_list[0] = uU.clone()
+        h = params[-1] 
+        # H = h @ h.conj().T
+        # e, V = torch.linalg.eigh(H)
+        q, r = torch.linalg.qr(h)
+        U = MPS_list[-1]
+        U = torch.einsum("abcd, de -> abce", U, q)
+        MPS_list[-1] = U.clone()
+
+        for i in range(self.L):
+            self.kraus_ops[i].data[:] = MPS_list[i].clone().reshape(self.d**2, self.d**2).T
+
+        assert self.check_point_on_manifold(rtol = 1e-5), "Kraus operators are not on the Stiefel manifold"
+
+        # self.r.data[:] = r
+

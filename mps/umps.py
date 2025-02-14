@@ -170,7 +170,7 @@ class uMPS(nn.Module):
         self.params = nn.ParameterList([nn.Parameter(torch.empty(self.chi, self.chi, self.chi, self.chi)) for _ in range(self.layers * (self.N - 1))])
         self.initialize_MPS(init_with=init_with)
         self._discriminator = self._get_discriminator()
-        
+    
 
 
     def initialize_MPS(self, init_with: torch.Tensor | None = None):
