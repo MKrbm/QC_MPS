@@ -26,13 +26,29 @@ python train_mnist.py \
 python train_mnist.py \
     --epochs 10 \
     --seed 2024 \
-    --lr 0.01 \
+    --lr 0.0001 \
     mpsae \
     --mode plain \
     --manifold Original \
     --conv_strategy relative \
-    --conv_threshold 1e-1 \
-    --simple_epochs 1
+    --conv_threshold 1e-2 \
+    --simple_epochs 1 \
+    --simple_lr 0.001
+
+python train_mnist.py \
+    --epochs 100 \
+    --seed 2024 \
+    --lr 0.0001 \
+    mpsae \
+    --mode adaptive \
+    --manifold Original \
+    --conv_strategy relative \
+    --conv_threshold 1e-2 \
+    --total_schedule_steps 20 \
+    --schedule_type cosine \
+    --simple_epochs 1 \
+    --simple_lr 0.001
+
 """
 import argparse
 import torch
@@ -263,22 +279,28 @@ def main():
     elif args.model == "mpsae":
         if args.mode == "adaptive":
             # Use the adaptive lambda training function for MPSAE.
-            metrics = mpsae_adaptive_train(
-                trainloader=dataloader,
+            _ = mpsae_adaptive_train(
+                dataloader=dataloader,
                 device=device,
-                N=img_size * img_size,
+                N=args.n,
+                mps_epochs=args.simple_epochs,
+                mps_lr=args.simple_lr,
+                mps_optimize="greedy",
+                manifold=args.manifold,
+                K=args.K,
+                max_epochs=args.epochs,
+                min_epochs=args.min_epochs,
+                patience=args.patience,
+                conv_strategy=args.conv_strategy,
+                conv_threshold=args.conv_threshold,
+                lr=args.lr,
+                log_steps=args.log_steps,
+                dtype=torch.float64,
                 total_schedule_steps=args.total_schedule_steps,
                 schedule_type=args.schedule_type,  # Choose among 'linear', 'polynomial', 'soft_exponential', 'cosine'.
                 poly_power=2,
                 k=0.1,
-                epochs_per_phase=args.epochs,
-                min_epochs=args.min_epochs,
-                conv_threshold=args.conv_threshold,
-                patience=args.patience,
-                conv_strategy=args.conv_strategy,
                 spike_threshold=0.1,
-                log_steps=args.log_steps,
-                lr=args.lr
             )
         else:
             _ = mpsae_train(

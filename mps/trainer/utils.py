@@ -8,15 +8,25 @@ import matplotlib.pyplot as plt
 
 def loss_batch(outputs, labels):
     """
-    Binary cross-entropy–style loss: for each sample use `output` if label==0,
-    otherwise use (1 - output).
+    Computes a binary cross-entropy–style loss for a batch of outputs and labels.
+
+    For each sample in the batch:
+    - If the label is 0, the loss is computed as -log(output).
+    - If the label is 1, the loss is computed as -log(1 - output).
+
+    Args:
+        outputs (torch.Tensor): The predicted probabilities for each sample.
+        labels (torch.Tensor): The true labels for each sample (0 or 1).
+
+    Returns:
+        torch.Tensor: The average loss over the batch.
     """
     device = outputs.device
     loss_val = torch.zeros(1, device=device, dtype=outputs.dtype)
     for i in range(len(outputs)):
         prob = outputs[i] if labels[i] == 0 else (1 - outputs[i])
         loss_val -= torch.log(prob + 1e-8)
-    return loss_val
+    return loss_val / len(outputs)
 
 def calculate_accuracy(outputs, labels):
     """
@@ -80,5 +90,11 @@ def plot_training_metrics(x_axis, loss_vals, accuracy_vals, weight_ratio_vals=No
     
     fig.suptitle(title)
     fig.tight_layout()
-    plt.savefig(filename)
+    try:
+        filename_html = filename.replace(".png", ".html")
+        import mpld3
+        mpld3.save_html(fig, filename_html)
+    except Exception as e:
+        print(f"Error saving HTML file: {e}")
+        plt.savefig(filename, dpi=300)
     plt.show()

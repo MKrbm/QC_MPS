@@ -8,6 +8,7 @@ from scipy.stats import unitary_group, ortho_group
 import geoopt  # Added for Geoopt functionalities
 from enum import Enum
 from mps.simple_mps import SimpleMPS
+from mps.trainer import utils
 
 class ManifoldType(Enum):
     CANONICAL = "canonical"
@@ -201,7 +202,10 @@ class MPSTPCP(nn.Module):
         assert X.shape[1:] == (self.N, 2), f"Expected X to have shape (batch_size, {self.N}, 2), but got {X.shape}"
         if normalize:
             X = X / torch.norm(X, dim=-1).unsqueeze(-1)
+        
 
+        r = self.r / torch.norm(self.r)
+        W = self.W / torch.norm(self.W, dim=1, keepdim=True)
         # self.proj_stiefel(check_on_manifold=True, print_log=True)
 
         batch_size = X.shape[0]
@@ -217,12 +221,12 @@ class MPSTPCP(nn.Module):
             rho = self.forward_layer(rho, kraus_ops)
 
             if i < self.L - 1:
-                rho = self.partial(rho, 0, self.W[i])
+                rho = self.partial(rho, 0, W[i])
                 next_rho = self.get_rho(X[:, i + 2])
                 rho = self.tensor_product(rho, next_rho)
 
             # Start of Selection
-        rho_out = self.partial(rho, 0, self.W[self.L - 1])
+        rho_out = self.partial(rho, 0, W[self.L - 1])
 
             # rho_test = rho_out[0, :, :]
             # trace = torch.trace(rho_test)
@@ -230,15 +234,16 @@ class MPSTPCP(nn.Module):
             # diag = torch.diagonal(rho_test, dim1=-2, dim2=-1)
             # assert torch.all(diag >= 0), "Some diagonal elements of rho_out are negative."
 
-        mes0 = self.r @ self.pros0 @ self.r.T.conj()
+        mes0 = r @ self.pros0 @ r.T.conj()
         mes0_result = torch.einsum("ij,...ji->...", mes0, rho_out)
 
         if self.with_probs:
             return mes0_result
         else:
-            mes1 = self.r @ self.pros1 @ self.r.T.conj()
+            mes1 = r @ self.pros1 @ r.T.conj()
             mes1_result = torch.einsum("ij,...ji->...", mes1, rho_out)
-            return torch.stack([mes0_result, mes1_result], dim=-1)
+            outputs = torch.stack([mes0_result, mes1_result], dim=-1)
+            return self._to_probs(outputs)
 
     @staticmethod
     def tensor_product(rho1, rho2):
@@ -480,12 +485,20 @@ class MPSTPCP(nn.Module):
         #     self.mes.data[:] = q @ self.mes @ q.conj().T
     
     def normalize_w_and_r(self):
-        self.W.data[:] /= self.W.norm(dim=-1, keepdim=True)
-        self.r.data[:] = self.r / torch.linalg.norm(self.r)
+        with torch.no_grad():
+            self.W.data[:] /= self.W.norm(dim=-1, keepdim=True)
+            self.r.data[:] = self.r / torch.linalg.norm(self.r)
+    
+    @staticmethod
+    def _to_probs(outputs):
+        """
+        Convert model outputs to probabilities.
+        """
+        return utils.to_probs(outputs)[:, 0]
     
 
 
-def regularize_weight(w, eps=1e-12):
+def regularize_weight(w):
     """
     Computes a regularization term based on the log of the ratio Var(W)/E(W)
     of the post-selection success rate when the input state is uniform.
@@ -517,12 +530,14 @@ def regularize_weight(w, eps=1e-12):
     if w.shape != (L, 2):
         raise ValueError(f"Expected w to have shape ({L}, 2), but got {w.shape}.")
     
-    if not torch.allclose(torch.norm(w, dim=1), torch.ones(L, device=w.device, dtype=w.dtype), atol=1e-6):
-        raise ValueError("The norm of each row in w must be 1.")
+    # normalize w 
+    w = w / torch.norm(w, dim=1, keepdim=True)
+    # if not torch.allclose(torch.norm(w, dim=1), torch.ones(L, device=w.device, dtype=w.dtype), atol=1e-6):
+    #     raise ValueError("The norm of each row in w must be 1.")
     
     w_4 = w**4
 
-    return torch.log(w_4.sum(dim=1)).mean() + np.log(2) # np.log(2) to shift the origin to 0
+    return w_4.sum(dim=1).mean() - 1/2
     
     
     

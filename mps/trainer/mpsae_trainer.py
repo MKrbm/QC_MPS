@@ -17,6 +17,7 @@ from mps.radam import RiemannianAdam
 
 # Import common utilities.
 from mps.trainer.utils import loss_batch, calculate_accuracy, to_probs, plot_training_metrics
+from mps.trainer.smps_trainer import smps_train
 
 def mpsae_train(
     dataloader,
@@ -55,38 +56,21 @@ def mpsae_train(
     if weight_values is None:
         weight_values = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1]
 
-    # --- 1) Train SimpleMPS ---
-    smps = SimpleMPS(N, 2, d, l, layers=1, device=device, dtype=dtype, optimize=mps_optimize)
-    logsoftmax = torch.nn.LogSoftmax(dim=-1)
-    nnloss = torch.nn.NLLLoss(reduction="mean")
-    opt_smps = torch.optim.Adam(smps.parameters(), lr=mps_lr)
-    smps_losses = []
-    smps.train()
-    print(f"\n=== Training SimpleMPS for {mps_epochs} epoch(s)... ===")
-    for epoch in range(mps_epochs):
-        total_loss = 0.0
-        total_samples = 0
-        total_correct = 0
-        for batch_idx, (data, target) in enumerate(dataloader):
-            data, target = data.to(device), target.to(device)
-            data = data.permute(1, 0, 2)  # [batch, N, 2] → [N, batch, 2]
-            opt_smps.zero_grad()
-            outputs = smps(data)
-            outputs = logsoftmax(outputs)
-            loss = nnloss(outputs, target)
-            loss.backward()
-            opt_smps.step()
-            bs = target.size(0)
-            total_loss += loss.item() * bs
-            total_samples += bs
-            preds = outputs.argmax(dim=-1)
-            acc = (preds == target).float().sum().item()
-            total_correct += acc
-            print(f"[SimpleMPS] Epoch {epoch+1}, Step {batch_idx+1}/{len(dataloader)} | Loss: {loss.item():.6f} | Acc: {acc/bs:.2%}")
-        epoch_loss = total_loss / total_samples
-        epoch_acc = total_correct / total_samples
-        smps_losses.append(epoch_loss)
-        print(f"[SimpleMPS] Epoch {epoch+1} | Loss: {epoch_loss:.6f} | Acc: {epoch_acc:.2%}")
+    manifold_map = {
+        "Exact": ManifoldType.EXACT,
+        "Frobenius": ManifoldType.FROBENIUS,
+        "Canonical": ManifoldType.CANONICAL,
+        "Cayley": ManifoldType.EXACT,
+        "MatrixExp": ManifoldType.EXACT,
+        "ForwardEuler": ManifoldType.EXACT,
+        "Original": ManifoldType.EXACT,
+    }
+    if manifold not in manifold_map:
+        raise ValueError(f"Invalid manifold='{manifold}'.")
+
+    # Add SimpleMPS training step
+    print("Starting SimpleMPS training...")
+    smps = smps_train(dataloader, N = N, d = d, l = l, epochs = mps_epochs, lr = mps_lr, log_steps = log_steps, dtype = dtype, device = device)
 
     def get_tpcp_optimizer(parameters) -> torch.optim.Optimizer:
         if manifold in ["Cayley", "MatrixExp", "ForwardEuler"]:
@@ -112,17 +96,6 @@ def mpsae_train(
             raise ValueError(f"Invalid manifold '{manifold}' or optimizer '{optimizer_name}'.")
 
     # --- 2) Build and Train TPCP Model ---
-    manifold_map = {
-        "Exact": ManifoldType.EXACT,
-        "Frobenius": ManifoldType.FROBENIUS,
-        "Canonical": ManifoldType.CANONICAL,
-        "Cayley": ManifoldType.EXACT,
-        "MatrixExp": ManifoldType.EXACT,
-        "ForwardEuler": ManifoldType.EXACT,
-        "Original": ManifoldType.EXACT,
-    }
-    if manifold not in manifold_map:
-        raise ValueError(f"Invalid manifold='{manifold}'.")
     tpcp = MPSTPCP(N, K=K, d=2, with_probs=False, with_identity=True, manifold=manifold_map[manifold])
 
     tpcp.to(device)
@@ -130,6 +103,7 @@ def mpsae_train(
     tpcp.set_canonical_mps(smps)
     metrics = {"loss": [], "accuracy": [], "weight_rate": []}
 
+    print("Starting MPSAE training...")
     for w in weight_values:
         # Reset TPCP optimizer at each weight using the function
         opt_tpcp = get_tpcp_optimizer(tpcp.kraus_ops.parameters())
@@ -153,14 +127,13 @@ def mpsae_train(
                 bs = target.size(0)
                 opt_tpcp.zero_grad()
                 outputs = tpcp(data)
-                outputs = to_probs(outputs)[:, 0]  # probability for label 0
                 loss_val = loss_batch(outputs, target)
                 loss_val.backward()
                 opt_tpcp.step()
                 weight_optimizer.step()
                 tpcp.normalize_w_and_r()
                 tpcp.proj_stiefel(check_on_manifold=True, print_log=False, rtol=1e-3)
-                epoch_loss_sum += loss_val.item()
+                epoch_loss_sum += loss_val.item() * bs
                 total_samples += bs
                 batch_acc = calculate_accuracy(outputs.detach(), target)
                 epoch_acc_sum += batch_acc.item() * bs
@@ -196,8 +169,8 @@ def mpsae_train(
             epoch += 1
 
     x_axis = range(1, len(metrics["loss"]) + 1)
-    plot_training_metrics(x_axis, metrics["loss"], metrics["accuracy"], metrics["weight_rate"],
-                            "MPSAE Training Metrics over Epochs",
-                            "mpsae_training_metrics.png")
+    plot_training_metrics(x_axis, metrics["loss"], metrics["accuracy"], metrics["weight_rate"], 
+                            title=f"MPSAE Training Metrics over Epochs (manifold={manifold}, optimizer={optimizer_name})",
+                            filename=f"mpsae_training_metrics_{manifold}_{optimizer_name}.png")
     
     return {"simple_mps_losses": smps_losses, "tpcp_metrics_by_w": metrics}
