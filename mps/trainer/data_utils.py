@@ -50,7 +50,7 @@ def create_mnist_dataloader(
         x = batch.view(*batch.shape[:-2], pixel_size)
         x = torch.stack([x, 1 - x], dim=-1)
         # L2-normalize along last dimension.
-        norm = torch.norm(x, dim=-1, keepdim=True).clamp(min=1e-8)
+        norm = torch.sum(x, dim=-1, keepdim=True).clamp(min=1e-8)
         return x / norm
 
     def filter_dataset(dataset, allowed_digits=[0, 1]):
@@ -60,6 +60,7 @@ def create_mnist_dataloader(
     transform = transforms.Compose([
         transforms.Resize(img_size),
         transforms.ToTensor(),
+        transforms.ConvertImageDtype(torch.float64),
         transforms.Lambda(filiter_single_channel),
         transforms.Lambda(embedding_pixel)
     ])

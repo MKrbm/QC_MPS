@@ -186,7 +186,7 @@ class MPSTPCP(nn.Module):
         self.kraus_ops = kraus_operators(K, L=self.L, with_identity=with_identity, manifold=manifold)
         self.manifold = self.kraus_ops.manifold
 
-        self.r = torch.eye(self.d, dtype=torch.float64, device=self.kraus_ops[0].device, requires_grad=True)
+        self.r = nn.Parameter(torch.eye(self.d, dtype=torch.float64, device=self.kraus_ops[0].device, requires_grad=True))
 
         self.pros0 = torch.tensor([[1, 0], [0, 0]], dtype=torch.float64, device=self.kraus_ops[0].device)
         self.pros1 = torch.tensor([[0, 0], [0, 1]], dtype=torch.float64, device=self.kraus_ops[0].device)
@@ -478,6 +478,10 @@ class MPSTPCP(nn.Module):
         #     unflip = torch.linalg.diagonal(r).sign().add(0.5).sign()
         #     q *= unflip[..., None, :]
         #     self.mes.data[:] = q @ self.mes @ q.conj().T
+    
+    def normalize_w_and_r(self):
+        self.W.data[:] /= self.W.norm(dim=-1, keepdim=True)
+        self.r.data[:] = self.r / torch.linalg.norm(self.r)
     
 
 

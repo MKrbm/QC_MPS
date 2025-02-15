@@ -5,31 +5,15 @@ import torch
 
 from mps.trainer.mpsae_trainer import mpsae_train
 # from mps.trainer.data_utils import SyntheticDataset
+from mps.trainer.data_utils import create_mnist_dataloader
 
-# Synthetic dataset (same as in your original train_mpsae.py)
-class SyntheticDataset(torch.utils.data.Dataset):
-    def __init__(self, n: int, num_samples: int = 10000, seed: int | None = None):
-        self.n = n
-        self.num_samples = num_samples
-        if seed is not None:
-            np.random.seed(seed)
-        self.labels = np.random.randint(0, 2, size=num_samples).astype(np.int64)
-    def __len__(self):
-        return self.num_samples
-    def __getitem__(self, index):
-        l = self.labels[index]
-        x = torch.zeros(self.n, dtype=torch.float64)
-        x[0] = float(l)
-        x_embedded = torch.stack([x, 1 - x], dim=-1)
-        x_embedded = x_embedded / (x_embedded.sum(dim=-1, keepdim=True).clamp(min=1e-8))
-        return x_embedded, torch.tensor(l, dtype=torch.int64)
 
 def main():
     parser = argparse.ArgumentParser(description="Train MPS Adiabatic Encoder (MPSAE) on synthetic data.")
     parser.add_argument("--n", type=int, default=256, help="Input vector dimension (default 256).")
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size (default 128).")
     parser.add_argument("--simple_epochs", type=int, default=1, help="Epochs for SimpleMPS training (default 1).")
-    parser.add_argument("--mpsae_max_epochs", type=int, default=10, help="Max epochs for TPCP training (default 10).")
+    parser.add_argument("--mpsae_max_epochs", type=int, default=15, help="Max epochs for TPCP training (default 10).")
     parser.add_argument("--min_epochs", type=int, default=3, help="Min epochs before convergence (default 3).")
     parser.add_argument("--patience", type=int, default=2, help="Patience for convergence (default 2).")
     parser.add_argument("--conv_strategy", type=str, default="absolute", choices=["absolute", "relative"], help="Convergence strategy.")
@@ -51,8 +35,15 @@ def main():
     else:
         print("Using system-based randomness.")
 
-    dataset = SyntheticDataset(n=args.n, num_samples=args.num_data or 10000, seed=args.seed)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+    # dataset = SyntheticDataset(n=args.n, num_samples=args.num_data or 10000, seed=args.seed)
+    # dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+    dataloader = create_mnist_dataloader(
+        allowed_digits=[0, 1],
+        img_size=16,
+        root="data",
+        train=True,
+        download=True,
+    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     _ = mpsae_train(

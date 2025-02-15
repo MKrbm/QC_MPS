@@ -80,11 +80,36 @@ def mpsae_train(
             total_loss += loss.item() * bs
             total_samples += bs
             preds = outputs.argmax(dim=-1)
-            total_correct += (preds == target).float().sum().item()
+            acc = (preds == target).float().sum().item()
+            total_correct += acc
+            print(f"[SimpleMPS] Epoch {epoch+1}, Step {batch_idx+1}/{len(dataloader)} | Loss: {loss.item():.6f} | Acc: {acc/bs:.2%}")
         epoch_loss = total_loss / total_samples
         epoch_acc = total_correct / total_samples
         smps_losses.append(epoch_loss)
         print(f"[SimpleMPS] Epoch {epoch+1} | Loss: {epoch_loss:.6f} | Acc: {epoch_acc:.2%}")
+
+    def get_tpcp_optimizer(parameters) -> torch.optim.Optimizer:
+        if manifold in ["Cayley", "MatrixExp", "ForwardEuler"]:
+            if optimizer_name.lower() == "adam":
+                return StiefelAdam(parameters, lr=lr, expm_method=manifold)
+            elif optimizer_name.lower() == "sgd":
+                return StiefelSGD(parameters, lr=lr, expm_method=manifold)
+            else:
+                raise ValueError("optimizer must be 'adam' or 'sgd'")
+        elif manifold in ["Exact", "Frobenius", "Canonical"]:
+            if optimizer_name.lower() == "adam":
+                return geoopt.optim.RiemannianAdam(parameters, lr=lr)
+            elif optimizer_name.lower() == "sgd":
+                return geoopt.optim.RiemannianSGD(parameters, lr=lr)
+            else:
+                raise ValueError("optimizer must be 'adam' or 'sgd'")
+        elif manifold == "Original":
+            if optimizer_name.lower() == "adam":
+                return RiemannianAdam(parameters, lr=lr)
+            else:
+                raise ValueError("SGD not supported for Original update rule.")
+        else:
+            raise ValueError(f"Invalid manifold '{manifold}' or optimizer '{optimizer_name}'.")
 
     # --- 2) Build and Train TPCP Model ---
     manifold_map = {
@@ -100,33 +125,16 @@ def mpsae_train(
         raise ValueError(f"Invalid manifold='{manifold}'.")
     tpcp = MPSTPCP(N, K=K, d=2, with_probs=False, with_identity=True, manifold=manifold_map[manifold])
 
-    # Create optimizer for TPCP.
-    if manifold in ["Cayley", "MatrixExp", "ForwardEuler"]:
-        if optimizer_name.lower() == "adam":
-            opt_tpcp = StiefelAdam(tpcp.kraus_ops.parameters(), lr=lr, expm_method=manifold)
-        elif optimizer_name.lower() == "sgd":
-            opt_tpcp = StiefelSGD(tpcp.kraus_ops.parameters(), lr=lr, expm_method=manifold)
-        else:
-            raise ValueError("optimizer must be 'adam' or 'sgd'")
-    elif manifold in ["Exact", "Frobenius", "Canonical"]:
-        if optimizer_name.lower() == "adam":
-            opt_tpcp = geoopt.optim.RiemannianAdam(tpcp.kraus_ops.parameters(), lr=lr)
-        elif optimizer_name.lower() == "sgd":
-            opt_tpcp = geoopt.optim.RiemannianSGD(tpcp.kraus_ops.parameters(), lr=lr)
-        else:
-            raise ValueError("optimizer must be 'adam' or 'sgd'")
-    elif manifold == "Original":
-        if optimizer_name.lower() == "adam":
-            opt_tpcp = RiemannianAdam(tpcp.kraus_ops.parameters(), lr=lr)
-        else:
-            raise ValueError("SGD not supported for Original update rule.")
-
     tpcp.to(device)
     tpcp.train()
     tpcp.set_canonical_mps(smps)
     metrics = {"loss": [], "accuracy": [], "weight_rate": []}
 
     for w in weight_values:
+        # Reset TPCP optimizer at each weight using the function
+        opt_tpcp = get_tpcp_optimizer(tpcp.kraus_ops.parameters())
+        weight_optimizer = torch.optim.Adam([tpcp.r], lr=lr)
+
         W = torch.zeros(tpcp.L, 2, dtype=dtype, device=device)
         W[:, 0] = 1
         W[:, 1] = w
@@ -149,13 +157,16 @@ def mpsae_train(
                 loss_val = loss_batch(outputs, target)
                 loss_val.backward()
                 opt_tpcp.step()
+                weight_optimizer.step()
+                tpcp.normalize_w_and_r()
                 tpcp.proj_stiefel(check_on_manifold=True, print_log=False, rtol=1e-3)
-                epoch_loss_sum += loss_val.item() * bs
+                epoch_loss_sum += loss_val.item()
                 total_samples += bs
                 batch_acc = calculate_accuracy(outputs.detach(), target)
                 epoch_acc_sum += batch_acc.item() * bs
                 if (step + 1) % log_steps == 0:
-                    print(f"[TPCP::w={w:.1f}] Epoch {epoch+1}, Step {step+1}/{len(dataloader)} | Batch Loss: {loss_val.item():.6f} | Acc: {batch_acc.item():.2%}")
+                    loss_per_data = loss_val.item() / bs
+                    print(f"[TPCP::w={w:.1f}] Epoch {epoch+1}, Step {step+1}/{len(dataloader)} | Loss per Data: {loss_per_data:.6f} | Acc: {batch_acc.item():.2%}")
             if total_samples == 0:
                 continue
             avg_loss = epoch_loss_sum / total_samples

@@ -81,11 +81,12 @@ def umps_train(
             
             if (step + 1) % log_steps == 0:
                 elapsed = time.time() - t0
+                loss_per_data = batch_loss.item() / data.shape[0]
                 print(f"Epoch {epoch+1:02} | Step {step+1:03}/{len(dataloader):03} | "
-                      f"Loss: {batch_loss.item():.6f} | Acc: {batch_acc.item():.2%} | Time: {elapsed:.2f}s")
+                      f"Loss: {loss_per_data:.6f} | Acc: {batch_acc.item():.2%} | Time: {elapsed:.2f}s")
                 t0 = time.time()
                 
-        avg_loss = epoch_loss / total_batches if total_batches > 0 else float("nan")
+        avg_loss = epoch_loss / len(dataloader.dataset)
         avg_acc = epoch_acc / total_batches if total_batches > 0 else float("nan")
         print(f"Epoch {epoch+1:02} | Avg Loss: {avg_loss:.6f} | Avg Acc: {avg_acc:.2%}")
         epoch_losses.append(avg_loss)
@@ -95,6 +96,6 @@ def umps_train(
     x_axis = list(range(1, epochs + 1))
     title = "uMPS Training Metrics"
     filename = "training_metrics.png"
-    plot_training_metrics(x_axis, epoch_losses, epoch_accs, None, title, filename)
+    plot_training_metrics(x_axis, epoch_losses, epoch_accs, None, None, title, filename)
     
     return all_losses
