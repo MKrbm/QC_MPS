@@ -156,9 +156,9 @@ def test_integration_mnist_tpcp_mps():
     # --------------------------
     # 5) Define optimizers
     # --------------------------
-    lr = 0.01
+    lr = 0.001
     optimizer_umps = unitary_optimizer.SGD(umps_model, lr=lr)
-    optimizer_tpcp = geoopt.optim.RiemannianSGD(tpcp_model.parameters(), lr=lr)
+    optimizer_tpcp = geoopt.optim.RiemannianSGD(tpcp_model.kraus_ops.parameters(), lr=lr)
 
     # --------------------------
     # 6) Train for a small # of epochs
@@ -231,7 +231,7 @@ def test_integration_mnist_tpcp_mps():
             # (e) Check parameter equality
             # --------------------------
             umps_params = list(umps_model.parameters())
-            tpcp_params = list(tpcp_model.parameters())
+            tpcp_params = list(tpcp_model.kraus_ops.parameters())
             for p_umps, p_tpcp in zip(umps_params, tpcp_params):
                 assert torch.allclose(p_umps.reshape(d**2, d**2), p_tpcp, atol=1e-6), \
                     "Model parameters differ between uMPS and MPSTPCP during training."

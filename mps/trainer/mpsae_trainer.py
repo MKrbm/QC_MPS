@@ -96,7 +96,7 @@ def mpsae_train(
             raise ValueError(f"Invalid manifold '{manifold}' or optimizer '{optimizer_name}'.")
 
     # --- 2) Build and Train TPCP Model ---
-    tpcp = MPSTPCP(N, K=K, d=2, with_probs=False, with_identity=True, manifold=manifold_map[manifold])
+    tpcp = MPSTPCP(N, K=K, d=2, enable_r=False, with_identity=True, manifold=manifold_map[manifold])
 
     tpcp.to(device)
     tpcp.train()

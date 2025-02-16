@@ -134,7 +134,7 @@ def mpsae_adaptive_train(
         N,
         K=K,
         d=2,
-        with_probs=False,
+        enable_r=False,
         with_identity=True,
         manifold=tpcp_mps.ManifoldType.EXACT,
     )

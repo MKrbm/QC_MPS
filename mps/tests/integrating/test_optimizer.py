@@ -93,7 +93,7 @@ def test_cptp_mps_sgd():
     # Set up SGD optimizers
     lr = 0.1
     optimizer_umps = unitary_optimizer.SGD(umps_model, lr=lr)
-    optimizer_mpstpcp = geoopt.optim.RiemannianSGD(mpstpcp_model.parameters(), lr=lr)
+    optimizer_mpstpcp = geoopt.optim.RiemannianSGD(mpstpcp_model.kraus_ops.parameters(), lr=lr)
 
     # Run several optimization steps and check that parameter updates match
     num_steps = 100
@@ -198,7 +198,7 @@ def test_cptp_mps_adam():
     lr = 0.01
     optimizer_umps = unitary_optimizer.Adam(umps_model, lr=lr)
     # optimizer_mpstpcp = geoopt.optim.RiemannianAdam(mpstpcp_model.parameters(), lr=lr, weight_decay=0.0)
-    optimizer_mpstpcp = RiemannianAdam(mpstpcp_model.parameters(), lr=lr)
+    optimizer_mpstpcp = RiemannianAdam(mpstpcp_model.kraus_ops.parameters(), lr=lr)
 
     # Run several optimization steps and check that parameter updates match
     num_steps = 5
@@ -274,7 +274,7 @@ def test_riemannian_adam_K3():
     model.kraus_ops.init_params()
 
     lr = 0.01
-    optimizer = RiemannianAdam(model.parameters(), lr=lr)
+    optimizer = RiemannianAdam(model.kraus_ops.parameters(), lr=lr)
 
     # ----- Part 1: Loss Decrease Check -----
     # We work with the first Kraus operator. On the EXACT manifold it is a square
@@ -300,7 +300,7 @@ def test_riemannian_adam_K3():
         # ----- Part 2: Stiefel Manifold Check -----
         # Check if the parameters are kept on the Stiefel manifold after optimization steps.
         stiefel = geoopt.Stiefel()
-        for param in model.parameters():
+        for param in model.kraus_ops.parameters():
             assert stiefel.check_point_on_manifold(param), (
                 f"Parameter is not on the Stiefel manifold: {param}"
             )

@@ -167,7 +167,7 @@ class MPSTPCP(nn.Module):
         N, 
         K, 
         d=2, 
-        with_probs: bool = True,
+        enable_r: bool = True,
         with_identity: bool = False, 
         manifold: ManifoldType = ManifoldType.CANONICAL
     ):
@@ -181,7 +181,7 @@ class MPSTPCP(nn.Module):
         self.N = N
         self.K = K
         self.d = d  # single-qubit dimension (d=2)
-        self.with_probs = with_probs
+        self.with_probs = enable_r
         self.L = N - 1
 
         self.kraus_ops = kraus_operators(K, L=self.L, with_identity=with_identity, manifold=manifold)
@@ -194,7 +194,7 @@ class MPSTPCP(nn.Module):
 
         self.initialize_W(random_init=False)
 
-    def forward(self, X, normalize: bool = True):
+    def forward(self, X, normalize: bool = True, return_probs: bool = False):
         """
         Args:
             X (tensor): shape (batch_size, N, 2), where N is the number of qubits (or pixels).
@@ -204,7 +204,8 @@ class MPSTPCP(nn.Module):
             X = X / torch.norm(X, dim=-1).unsqueeze(-1)
         
 
-        r = self.r / torch.norm(self.r)
+        # normalize r and W
+        r = self.r / (torch.norm(self.r) / np.sqrt(self.r.shape[0]))
         W = self.W / torch.norm(self.W, dim=1, keepdim=True)
         # self.proj_stiefel(check_on_manifold=True, print_log=True)
 
@@ -227,6 +228,7 @@ class MPSTPCP(nn.Module):
 
             # Start of Selection
         rho_out = self.partial(rho, 0, W[self.L - 1])
+        self.rho_last = rho_out.detach().clone()
 
             # rho_test = rho_out[0, :, :]
             # trace = torch.trace(rho_test)
@@ -237,13 +239,15 @@ class MPSTPCP(nn.Module):
         mes0 = r @ self.pros0 @ r.T.conj()
         mes0_result = torch.einsum("ij,...ji->...", mes0, rho_out)
 
-        if self.with_probs:
-            return mes0_result
+
+        mes1 = r @ self.pros1 @ r.T.conj()
+        mes1_result = torch.einsum("ij,...ji->...", mes1, rho_out)
+        outputs = torch.stack([mes0_result, mes1_result], dim=-1)
+        probs = self._to_probs(outputs)
+        if return_probs:
+            return probs
         else:
-            mes1 = r @ self.pros1 @ r.T.conj()
-            mes1_result = torch.einsum("ij,...ji->...", mes1, rho_out)
-            outputs = torch.stack([mes0_result, mes1_result], dim=-1)
-            return self._to_probs(outputs)
+            return probs[:, 0]
 
     @staticmethod
     def tensor_product(rho1, rho2):
@@ -293,7 +297,7 @@ class MPSTPCP(nn.Module):
         new_rho = out.sum(dim=0)  # Sum over the Kraus index K => (N, d, d)
         return new_rho
 
-    def partial(self, rho, site, weight):
+    def partial(self, rho: torch.Tensor, site: int, weight: torch.Tensor | None = None) -> torch.Tensor:
         """
         Perform a partial trace over one qubit (site=0 or site=1)
         for a batch of two-qubit states, possibly *weighted* by `weight`.
@@ -314,20 +318,20 @@ class MPSTPCP(nn.Module):
 
         # assert torch.allclose(torch.norm(weight), torch.tensor(1.0, dtype=weight.dtype, device=weight.device), atol=1e-10), f"weight must sum to 1, got {weight}"
         # assert torch.isclose(weight.norm(), torch.tensor(1.0, dtype=weight.dtype, device=weight.device)), f"weight must sum to 1, got {weight}"
-        import numpy as np
-        if weight is not None:
-            assert np.isclose(np.linalg.norm(weight.detach().cpu().numpy()), 1.0, atol=1e-10), f"weight must sum to 1, got {weight}"
-        # print(weight.norm() - 1)
+        if weight is None:
+            weight = torch.ones(self.d, dtype=rho.dtype, device=rho.device)
+            weight /= weight.norm()
+        
+
+        assert np.isclose(np.linalg.norm(weight.detach().cpu().numpy()), 1.0, atol=1e-10), f"weight must sum to 1, got {weight}"
 
         # Reshape => (batch_size, d, d, d, d)
         # We can call these indices: (n, a, b, c, d).
-        # But we'll just match your original naming pattern:
         rho_reshaped = rho.reshape(batch_size, self.d, self.d, self.d, self.d)
 
         # The idea:
         #   * site=0 => trace out the first qubit index => "n a c a d -> n c d"
         #   * site=1 => trace out the second qubit index => "n a c b c -> n a b"
-        #
         # Weighted partial trace means we multiply the summand by weight[a] or weight[b].
 
         if site == 0:
@@ -340,13 +344,10 @@ class MPSTPCP(nn.Module):
         elif site == 1:
             # Weighted partial trace
             # multiply each slice by weight[b]
-            # We'll follow the same index pattern: "n a c b c, b -> n a c"
+            # We'll follow the same index pattern: "n a c b c, b->n a c"
             # then rename 'c' -> 'b' so shape is (n, a, b).
             assert weight.shape == (2,), f"weight must be shape (2,), got {weight.shape}"
             reduced = torch.einsum("n a c b c, c->n a b", rho_reshaped, weight ** 2)
-            # rename dimension to have shape (n, a, b):
-            # in practice you can just keep it as is, or rename with .reshape(n, d, d).
-            # We'll do the explicit reshape:
             reduced = reduced.reshape(batch_size, self.d, self.d)
         else:
             raise ValueError("site must be 0 or 1 for a 2-qubit system.")
@@ -494,7 +495,7 @@ class MPSTPCP(nn.Module):
         """
         Convert model outputs to probabilities.
         """
-        return utils.to_probs(outputs)[:, 0]
+        return utils.to_probs(outputs)
     
 
 

@@ -83,7 +83,7 @@ def test_umps_tpcp_mps_integration():
     # The last one is at mpstpcp_model.rhos[-1], shape [batch_size, dim, dim].
     #
     with torch.no_grad():
-        rho_last = mpstpcp_model.rhos[-1]  # shape (bs, D, D) for some dimension D
+        rho_last = mpstpcp_model.rho_last  # shape (bs, D, D) for some dimension D
         assert rho_last.ndim == 3, "Expected rhos[-1] to have shape [batch_size, dim, dim]"
         for i in range(rho_last.size(0)):
             # 1) Check trace ~ 1
@@ -110,7 +110,7 @@ def test_umps_tpcp_mps_integration():
     # --------------------------
     lr = 0.1
     optimizer_umps = unitary_optimizer.SGD(umps_model, lr=lr)
-    optimizer_mpstpcp = geoopt.optim.RiemannianSGD(mpstpcp_model.parameters(), lr=lr)
+    optimizer_mpstpcp = geoopt.optim.RiemannianSGD(mpstpcp_model.kraus_ops.parameters(), lr=lr)
 
     # Set both models to training mode
     umps_model.train()
@@ -307,7 +307,7 @@ def test_tpcp_largeN_integration(manifold_type):
     # 4) Set up Riemannian optimizer
     # --------------------------
     lr = 0.05
-    optimizer = geoopt.optim.RiemannianSGD(mpstpcp_model.parameters(), lr=lr)
+    optimizer = geoopt.optim.RiemannianSGD(mpstpcp_model.kraus_ops.parameters(), lr=lr)
 
     # --------------------------
     # 5) Forward pass, compute loss

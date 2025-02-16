@@ -86,7 +86,7 @@ def test_mpstpcp_stiefel_sgd_integration():
     # --------------------------
     lr = 0.01
     momentum = 0.0
-    optimizer = StiefelSGD(mpstpcp_model.parameters(), lr=lr, momentum=momentum)
+    optimizer = StiefelSGD(mpstpcp_model.kraus_ops.parameters(), lr=lr, momentum=momentum)
 
     # --------------------------
     # 5) Forward pass and compute loss.
@@ -198,7 +198,7 @@ def test_mpstpcp_largeN_stiefel_sgd_integration():
     # --------------------------
     lr = 0.05
     momentum = 0.0
-    optimizer = StiefelSGD(mpstpcp_model.parameters(), lr=lr, momentum=momentum)
+    optimizer = StiefelSGD(mpstpcp_model.kraus_ops.parameters(), lr=lr, momentum=momentum)
 
     # --------------------------
     # 5) Initial forward pass and loss.

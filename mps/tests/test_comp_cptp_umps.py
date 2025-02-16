@@ -49,9 +49,9 @@ class TestUMPSvsTPCPMPS:
 
     def test_trivial(self):
         """
-        Test the first output match for trivial input and simple singlet-triplet unitary.
+        Test the first output match for trivial input and identity unitary.
 
-        The input is trivial (all elements are zero except the first element which is one) and the unitary is a simple singlet-triplet unitary.
+        The input is trivial (all elements are zero except the first element which is one) and the unitary is a simple identity unitary.
         This test ensures that the output of the MPSTPCP model matches the output of the uMPS model for this specific case.
         """
 
