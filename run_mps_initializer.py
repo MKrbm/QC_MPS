@@ -85,7 +85,7 @@ trainset = filter_digits(trainset, allowed_digits=[0, 1])
 batch_size = 128
 
 trainloader = torch.utils.data.DataLoader(
-    trainset, batch_size=batch_size, shuffle=False
+    trainset, batch_size=batch_size, shuffle=True
 )
 
 
@@ -137,8 +137,8 @@ for epoch in range(1):
         n_samples += data_size
         
         if batch_idx % 1 == 0:
-            avg_loss = running_loss / n_samples
-            avg_accuracy = accuracy(outputs, target)
+            avg_loss = float(running_loss / n_samples)
+            avg_accuracy = float(accuracy(outputs, target))
             losses.append(avg_loss)
             running_loss = 0
             running_accuracy = 0
@@ -154,13 +154,17 @@ W = torch.zeros(tpcp.L, 2, dtype=torch.float64)
 
 # optimizer = StiefelAdam(tpcp.parameters(), lr=0.0001, betas=(0.9, 0.999))
 tpcp.set_canonical_mps(smps)
-optimizer = RiemannianAdam(tpcp.parameters(), lr=0.0002, betas=(0.9, 0.999))
+optimizer = RiemannianAdam(tpcp.parameters(), lr=0.0001, betas=(0.9, 0.999))
 
-for w in [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1]:
+# Ws = np.linspace(0, 1, 20, endpoint=True)
+Ws = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.87, 0.9, 0.91, 0.92, 0.95, 0.97, 0.98, 0.99, 1.0]
+print(Ws)
+
+for w in Ws:
     W[:, 0] = 1
     W[:, 1] = w
     tpcp.initialize_W(W)
-    epochs = 15
+    epochs = 30
     for epoch in range(epochs):
         acc_tot = 0
         loss_tot = 0
@@ -177,4 +181,4 @@ for w in [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1]:
             if batch_idx % 10 == 0:
                 print("Loss: ", loss.item(), "Accuracy: ", acc)
 
-        print(f"Epoch {epoch} / {epochs} / Loss: {loss_tot / len(trainloader)} / Accuracy: {acc_tot / len(trainloader)} / Weight Ratio: {w / (1 - w)}")
+        print(f"Epoch {epoch} / {epochs} / Loss: {loss_tot / len(trainloader)} / Accuracy: {acc_tot / len(trainloader)} / Weight Ratio: {w}")
