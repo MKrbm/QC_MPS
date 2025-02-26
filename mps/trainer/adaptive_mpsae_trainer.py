@@ -29,7 +29,7 @@ from mps.trainer.smps_trainer import smps_train
 # =============================================================================
 # Helper: Schedule Function
 # =============================================================================
-def get_scheduled_lambda(schedule_type, step, total_steps, lambda_final, poly_power=2, k=0.1):
+def get_scheduled_lambda(schedule_type, step, total_steps, lambda_initial, lambda_final, poly_power=2, k=0.1):
     """
     Compute λ based on the scheduling strategy.
 
@@ -37,6 +37,7 @@ def get_scheduled_lambda(schedule_type, step, total_steps, lambda_final, poly_po
       schedule_type (str): 'linear', 'polynomial', 'soft_exponential', or 'cosine'
       step (int): current scheduling step (0 <= step <= total_steps)
       total_steps (int): total number of scheduling steps.
+      lambda_initial (float): initial λ value.
       lambda_final (float): final (target) λ value.
       poly_power (float): power for polynomial schedule.
       k (float): rate parameter for soft exponential schedule.
@@ -45,15 +46,15 @@ def get_scheduled_lambda(schedule_type, step, total_steps, lambda_final, poly_po
       float: scheduled λ.
     """
     if schedule_type == "linear":
-        return (step / total_steps) * lambda_final
+        return lambda_initial + (step / total_steps) * (lambda_final - lambda_initial)
     elif schedule_type == "polynomial":
-        return ((step / total_steps) ** poly_power) * lambda_final
+        return lambda_initial + ((step / total_steps) ** poly_power) * (lambda_final - lambda_initial)
     elif schedule_type == "soft_exponential":
-        # λ = λ_final * (1 - exp(-k * step)) / (1 - exp(-k * total_steps))
-        return lambda_final * (1 - math.exp(-k * step)) / (1 - math.exp(-k * total_steps))
+        # λ = λ_initial + (λ_final - λ_initial) * (1 - exp(-k * step)) / (1 - exp(-k * total_steps))
+        return lambda_initial + (lambda_final - lambda_initial) * (1 - math.exp(-k * step)) / (1 - math.exp(-k * total_steps))
     elif schedule_type == "cosine":
-        # cosine annealing from 0 to λ_final:
-        return lambda_final * (1 - math.cos(math.pi * step / total_steps)) / 2
+        # cosine annealing from λ_initial to λ_final:
+        return lambda_initial + (lambda_final - lambda_initial) * (1 - math.cos(math.pi * step / total_steps)) / 2
     else:
         raise ValueError(f"Unknown schedule_type: {schedule_type}")
 
@@ -142,19 +143,25 @@ def mpsae_adaptive_train(
     tpcp.train()
     tpcp.set_canonical_mps(smps)
     
+    logsoftmax = torch.nn.LogSoftmax(dim=-1)
+    nnloss = torch.nn.NLLLoss(reduction="mean")
+
     # Initialize W: start with second column small (e.g., 0.05).
     W = torch.zeros(tpcp.L, 2, dtype=torch.float64, device=device)
     W[:, 0] = 1 
-    W[:, 1] = 0.05
+    W[:, 1] = 0.02
     tpcp.initialize_W(W)
 
     # --- Step 3: Determine lambda_final Using the Initial Loss Value ---
     data_batch, target_batch = next(iter(dataloader))
     data_batch, target_batch = data_batch.to(device), target_batch.to(device)
     with torch.no_grad():
-        initial_probs = tpcp(data_batch)
-        print("Initial model outputs:", initial_probs)
-        initial_loss = loss_batch(initial_probs, target_batch)
+        initial_probs = tpcp(data_batch, return_probs=True)
+        softmax_initial_probs = logsoftmax(initial_probs)
+        # print("Initial model outputs:", softmax_initial_probs)
+        initial_accuracy = calculate_accuracy(initial_probs[:, 0], target_batch)
+        print(f"Initial accuracy: {initial_accuracy.item():.2%}")
+        initial_loss = nnloss(softmax_initial_probs, target_batch)
         initial_reg_weight = tpcp_mps.regularize_weight(tpcp.W)
     print(f"Initial loss for λ determination: {initial_loss.item():.6f}")
     print(f"Initial regularization weight: {initial_reg_weight.item():.6f}")
@@ -164,10 +171,12 @@ def mpsae_adaptive_train(
 
     # --- Step 4: Scheduler Setup ---
     current_schedule_step = 0
+    lambda_initial = 0.1
     current_lambda = get_scheduled_lambda(
         schedule_type,
         current_schedule_step,
         total_schedule_steps,
+        lambda_initial,
         lambda_final,
         poly_power,
         k,
@@ -187,7 +196,7 @@ def mpsae_adaptive_train(
         while phase_epoch < max_epochs:
             # Create optimizers: one for the Kraus ops and one for W and r.
             optimizer = RiemannianAdam(tpcp.kraus_ops.parameters(), lr=lr, betas=(0.9, 0.999))
-            optimizer_weight = torch.optim.Adam([tpcp.W, tpcp.r], lr=0.01)
+            optimizer_weight = torch.optim.Adam([tpcp.W, tpcp.r], lr=lr * 3)
 
             epoch_loss_sum = 0.0
             epoch_acc_sum = 0.0
@@ -196,10 +205,10 @@ def mpsae_adaptive_train(
             t0 = time.time()
 
             # Add random noise to the weight to avoid local minima.
-            noise_std = 0.1  # standard deviation for noise
-            with torch.no_grad():
-                tpcp.W.add_(torch.randn_like(tpcp.W) * noise_std)
-                tpcp.normalize_w_and_r()
+            # noise_std = 0.1  # standard deviation for noise
+            # with torch.no_grad():
+                # tpcp.W.add_(torch.randn_like(tpcp.W) * noise_std)
+            #     tpcp.normalize_w_and_r()
 
             # Initialize sum for regularization weight.
             epoch_reg_weight_sum = 0.0
@@ -210,12 +219,14 @@ def mpsae_adaptive_train(
                 optimizer.zero_grad()
                 optimizer_weight.zero_grad()
 
-                outputs = tpcp(data)
-                loss = loss_batch(outputs, target)
+                outputs = tpcp(data, return_probs=True)
+                softmax_outputs = logsoftmax(outputs)
+                loss = nnloss(softmax_outputs, target)
                 reg_weight = tpcp_mps.regularize_weight(tpcp.W)
                 loss_with_reg = loss + current_lambda * reg_weight
 
                 loss_with_reg.backward()
+                # print(tpcp.W.grad)
                 optimizer.step()
                 optimizer_weight.step()
                 tpcp.normalize_w_and_r()
@@ -226,13 +237,13 @@ def mpsae_adaptive_train(
                 epoch_loss_with_reg_sum += loss_with_reg.item() * bs
                 epoch_reg_weight_sum += reg_weight.item() * bs
                 total_samples += bs
-                batch_acc = calculate_accuracy(outputs.detach(), target)
+                batch_acc = calculate_accuracy(outputs[:, 0].detach(), target)
                 epoch_acc_sum += batch_acc.item() * bs
 
-                if (step + 1) % log_steps == 0:
+                if (step + 1) % log_steps == 0 or step == 0:
                     print(
                         f"[λ {current_lambda:.6f}] Epoch {phase_epoch+1}, Step {step+1}/{len(dataloader)} | "
-                        f"Batch Loss: {loss.item():.6f} | Reg: {reg_weight.item():.6f} | "
+                        f"Reg: {reg_weight.item():.6f} | Batch Loss: {loss.item():.6f} | "
                         f"Loss+Reg: {loss_with_reg.item():.6f} | Acc: {batch_acc.item():.2%}"
                     )
 
@@ -243,9 +254,9 @@ def mpsae_adaptive_train(
             avg_reg_weight = epoch_reg_weight_sum / total_samples
             elapsed = time.time() - t0
             print(
-                f"[λ {current_lambda:.6f}] Epoch {phase_epoch+1} | Avg Loss: {avg_loss:.6f} | "
-                f"Avg Loss+Reg: {avg_loss_with_reg:.6f} | Acc: {avg_acc:.2%} | "
-                f"Avg Reg: {avg_reg_weight:.6f} | Time: {elapsed:.2f}s"
+                f"[λ {current_lambda:.6f}] Epoch {phase_epoch+1} | Avg Reg: {avg_reg_weight:.6f} | "
+                f"Avg Loss: {avg_loss:.6f} | Avg Loss+Reg: {avg_loss_with_reg:.6f} | "
+                f"Acc: {avg_acc:.2%} | Time: {elapsed:.2f}s"
             )
 
             # Record metrics.
@@ -254,27 +265,20 @@ def mpsae_adaptive_train(
             metrics["lambda"].append(current_lambda)
             metrics["weight_rate"].append(avg_reg_weight)
 
-            # --- Hybrid: Check for spikes and convergence ---
+            # --- Check for convergence ---
             if prev_epoch_loss is not None:
-                # If the simple loss spikes more than spike_threshold relative to the previous epoch.
-                if avg_loss > prev_epoch_loss * (1 + spike_threshold):
-                    print(
-                        f"Spike detected: Loss increased from {prev_epoch_loss:.6f} to {avg_loss:.6f}. Holding λ update."
-                    )
-                    conv_counter = 0  # reset convergence counter
-                else:
-                    # Check convergence criteria based on regularized loss.
-                    if phase_epoch >= min_epochs:
-                        if conv_strategy == "absolute":
-                            condition = abs(avg_loss_with_reg - prev_epoch_loss) < conv_threshold
-                        elif conv_strategy == "relative":
-                            condition = abs(avg_loss_with_reg - prev_epoch_loss) / (abs(prev_epoch_loss) + 1e-8) < conv_threshold
-                        else:
-                            condition = False
-                        if condition:
-                            conv_counter += 1
-                        else:
-                            conv_counter = 0
+                # Check convergence criteria based on regularized loss.
+                if phase_epoch >= min_epochs:
+                    if conv_strategy == "absolute":
+                        condition = abs(avg_loss_with_reg - prev_epoch_loss) < conv_threshold
+                    elif conv_strategy == "relative":
+                        condition = abs(avg_loss_with_reg - prev_epoch_loss) / (abs(prev_epoch_loss) + 1e-8) < conv_threshold
+                    else:
+                        condition = False
+                    if condition:
+                        conv_counter += 1
+                    else:
+                        conv_counter = 0
             prev_epoch_loss = avg_loss_with_reg
             phase_epoch += 1
             epoch_total += 1
@@ -286,7 +290,7 @@ def mpsae_adaptive_train(
 
         # Update λ for the next phase.
         current_schedule_step += 1
-        new_lambda = get_scheduled_lambda(schedule_type, current_schedule_step, total_schedule_steps, lambda_final, poly_power, k)
+        new_lambda = get_scheduled_lambda(schedule_type, current_schedule_step, total_schedule_steps, lambda_initial, lambda_final, poly_power, k)
         if new_lambda <= current_lambda:
             print("Scheduled λ did not increase; ending training.")
             break

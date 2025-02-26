@@ -90,11 +90,10 @@ def plot_training_metrics(x_axis, loss_vals, accuracy_vals, weight_ratio_vals=No
     
     fig.suptitle(title)
     fig.tight_layout()
-    try:
-        filename_html = filename.replace(".png", ".html")
-        import mpld3
-        mpld3.save_html(fig, filename_html)
-    except Exception as e:
-        print(f"Error saving HTML file: {e}")
-        plt.savefig(filename, dpi=300)
+    # try:
+    #     filename_html = filename.replace(".png", ".html")
+    #     import mpld3
+    #     mpld3.save_html(fig, filename_html)
+    # except Exception as e:
+    plt.savefig(filename, dpi=300)
     plt.show()

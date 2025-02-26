@@ -499,7 +499,7 @@ class MPSTPCP(nn.Module):
     
 
 
-def regularize_weight(w):
+def regularize_weight(w, p = 4):
     """
     Computes a regularization term based on the log of the ratio Var(W)/E(W)
     of the post-selection success rate when the input state is uniform.
@@ -527,6 +527,8 @@ def regularize_weight(w):
         torch.Tensor: A scalar representing log(Var(W)/E[W] + eps).
     """
 
+    assert p > 2, "p must be greater than 2"
+
     L = w.shape[0]
     if w.shape != (L, 2):
         raise ValueError(f"Expected w to have shape ({L}, 2), but got {w.shape}.")
@@ -536,9 +538,9 @@ def regularize_weight(w):
     # if not torch.allclose(torch.norm(w, dim=1), torch.ones(L, device=w.device, dtype=w.dtype), atol=1e-6):
     #     raise ValueError("The norm of each row in w must be 1.")
     
-    w_4 = w**4
+    w_p = w**p
 
-    return w_4.sum(dim=1).mean() - 1/2
+    return w_p.sum(dim=1).mean() - 1/2
     
     
     

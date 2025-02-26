@@ -137,7 +137,7 @@ def mpsae_train(
                 total_samples += bs
                 batch_acc = calculate_accuracy(outputs.detach(), target)
                 epoch_acc_sum += batch_acc.item() * bs
-                if (step + 1) % log_steps == 0:
+                if (step) % log_steps == 0:
                     loss_per_data = loss_val.item() / bs
                     print(f"[TPCP::w={w:.1f}] Epoch {epoch+1}, Step {step+1}/{len(dataloader)} | Loss per Data: {loss_per_data:.6f} | Acc: {batch_acc.item():.2%}")
             if total_samples == 0:
@@ -173,4 +173,4 @@ def mpsae_train(
                             title=f"MPSAE Training Metrics over Epochs (manifold={manifold}, optimizer={optimizer_name})",
                             filename=f"mpsae_training_metrics_{manifold}_{optimizer_name}.png")
     
-    return {"simple_mps_losses": smps_losses, "tpcp_metrics_by_w": metrics}
+    return {"tpcp_metrics_by_w": metrics}

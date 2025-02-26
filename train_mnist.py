@@ -36,7 +36,7 @@ python train_mnist.py \
     --simple_lr 0.001
 
 python train_mnist.py \
-    --epochs 100 \
+    --epochs 10 \
     --seed 2024 \
     --lr 0.0001 \
     mpsae \
@@ -47,7 +47,8 @@ python train_mnist.py \
     --total_schedule_steps 20 \
     --schedule_type cosine \
     --simple_epochs 1 \
-    --simple_lr 0.001
+    --simple_lr 0.001 \
+    --min_epochs 10
 
 """
 import argparse
