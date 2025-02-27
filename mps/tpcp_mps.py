@@ -194,7 +194,7 @@ class MPSTPCP(nn.Module):
 
         self.initialize_W(random_init=False)
 
-    def forward(self, X, normalize: bool = True, return_probs: bool = False):
+    def forward(self, X, normalize: bool = True, return_probs: bool = False, return_reg: bool = False):
         """
         Args:
             X (tensor): shape (batch_size, N, 2), where N is the number of qubits (or pixels).
@@ -206,7 +206,9 @@ class MPSTPCP(nn.Module):
 
         # normalize r and W
         r = self.r / (torch.norm(self.r) / np.sqrt(self.r.shape[0]))
-        W = self.W / torch.norm(self.W, dim=1, keepdim=True)
+
+
+
         # self.proj_stiefel(check_on_manifold=True, print_log=True)
 
         batch_size = X.shape[0]
@@ -220,19 +222,21 @@ class MPSTPCP(nn.Module):
             kraus_ops = self.kraus_ops[i].reshape(
                 self.K, self.kraus_ops.act_size, self.kraus_ops.act_size
             )
-            rho, reg = self.forward_layer(rho, kraus_ops)
+            rho = self.forward_layer(rho, kraus_ops)
 
             if i < self.L - 1:
-                rho = self.partial(rho, 0, W[i])
+                rho, reg = self.partial(rho, 0, self.W[i])
+                reg_list.append(reg.mean())
                 next_rho = self.get_rho(X[:, i + 2])
                 rho = self.tensor_product(rho, next_rho)
 
             # Start of Selection
-        rho_out, reg = self.partial(rho, 0, W[self.L - 1])
+        rho_out, reg = self.partial(rho, 0, self.W[self.L - 1])
+        reg_list.append(reg.mean())
         self.rho_last = rho_out.detach().clone()
-        self.reg = torch.mean(torch.tensor(reg_list))
-        print(f"Regularization: {self.reg.item():.6f}")
 
+        reg = sum(reg_list) / len(reg_list)
+        
             # rho_test = rho_out[0, :, :]
             # trace = torch.trace(rho_test)
             # assert torch.isclose(trace, torch.tensor(1.0, device=rho_test.device, dtype=rho_test.dtype)), f"Trace of rho_out is {trace}, expected 1."
@@ -248,9 +252,9 @@ class MPSTPCP(nn.Module):
         outputs = torch.stack([mes0_result, mes1_result], dim=-1)
         probs = self._to_probs(outputs)
         if return_probs:
-            return probs
+            return probs if not return_reg else (probs, reg)
         else:
-            return probs[:, 0]
+            return probs[:, 0] if not return_reg else (probs[:, 0], reg)
 
     @staticmethod
     def tensor_product(rho1, rho2):
@@ -326,7 +330,6 @@ class MPSTPCP(nn.Module):
             weight = torch.ones(self.d, dtype=rho.dtype, device=rho.device)
             weight /= weight.norm()
         
-
         assert np.isclose(np.linalg.norm(weight.detach().cpu().numpy()), 1.0, atol=1e-10), f"weight must sum to 1, got {weight}"
 
         # Reshape => (batch_size, d, d, d, d)

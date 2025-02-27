@@ -6,9 +6,10 @@ Run training on a synthetic dataset.
 Example usage:
 
 python train_toy.py \
-    --epochs 10 \
+    --epochs 300 \
     --seed 2024 \
     --lr 0.0001 \
+    --N 20 \
     umps
 
     
@@ -30,13 +31,13 @@ python train_toy.py \
     --seed 2024 \
     --lr 0.0001 \
     mpsae \
-    --schedule_steps 15 \
+    --total_schedule_steps 15 \
     --mode adaptive \
     --manifold Exact \
     --conv_strategy relative \
     --conv_threshold 1e-2 \
     --min_epochs 90 \
-    --simple_epochs 200 \
+    --simple_epochs 100 \
     --simple_lr 0.00005
 """
 
