@@ -201,6 +201,7 @@ def mpsae_adaptive_train(
             epoch_loss_sum = 0.0
             epoch_acc_sum = 0.0
             epoch_loss_with_reg_sum = 0.0
+            epoch_weight_ratio_sum = 0.0
             total_samples = 0
             t0 = time.time()
 
@@ -231,6 +232,7 @@ def mpsae_adaptive_train(
                 optimizer_weight.step()
                 tpcp.normalize_w_and_r()
                 tpcp.proj_stiefel(check_on_manifold=True, print_log=False)
+                weight_ratio = torch.abs(tpcp.W[:, 1].norm() / tpcp.W[:, 0].norm()).mean()
 
                 bs = target.size(0)
                 epoch_loss_sum += loss.item() * bs
@@ -239,12 +241,15 @@ def mpsae_adaptive_train(
                 total_samples += bs
                 batch_acc = calculate_accuracy(outputs[:, 0].detach(), target)
                 epoch_acc_sum += batch_acc.item() * bs
+                epoch_weight_ratio_sum += weight_ratio.item() * bs
+
 
                 if (step + 1) % log_steps == 0 or step == 0:
                     print(
                         f"[λ {current_lambda:.6f}] Epoch {phase_epoch+1}, Step {step+1}/{len(dataloader)} | "
                         f"Reg: {reg_weight.item():.6f} | Batch Loss: {loss.item():.6f} | "
                         f"Loss+Reg: {loss_with_reg.item():.6f} | Acc: {batch_acc.item():.2%}"
+                        f"Weight Ratio: {weight_ratio.item():.6f}"
                     )
 
             # End of epoch: compute averages.
@@ -252,11 +257,12 @@ def mpsae_adaptive_train(
             avg_loss_with_reg = epoch_loss_with_reg_sum / total_samples
             avg_acc = epoch_acc_sum / total_samples
             avg_reg_weight = epoch_reg_weight_sum / total_samples
+            avg_weight_ratio = epoch_weight_ratio_sum / total_samples
             elapsed = time.time() - t0
             print(
                 f"[λ {current_lambda:.6f}] Epoch {phase_epoch+1} | Avg Reg: {avg_reg_weight:.6f} | "
                 f"Avg Loss: {avg_loss:.6f} | Avg Loss+Reg: {avg_loss_with_reg:.6f} | "
-                f"Acc: {avg_acc:.2%} | Time: {elapsed:.2f}s"
+                f"Acc: {avg_acc:.2%} | Time: {elapsed:.2f}s | Weight Ratio: {avg_weight_ratio:.6f}"
             )
 
             # Record metrics.

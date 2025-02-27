@@ -215,11 +215,12 @@ class MPSTPCP(nn.Module):
         init_rho = self.tensor_product(rho1, rho2)
 
         rho = init_rho
+        reg_list = []
         for i in range(self.L):
             kraus_ops = self.kraus_ops[i].reshape(
                 self.K, self.kraus_ops.act_size, self.kraus_ops.act_size
             )
-            rho = self.forward_layer(rho, kraus_ops)
+            rho, reg = self.forward_layer(rho, kraus_ops)
 
             if i < self.L - 1:
                 rho = self.partial(rho, 0, W[i])
@@ -227,8 +228,10 @@ class MPSTPCP(nn.Module):
                 rho = self.tensor_product(rho, next_rho)
 
             # Start of Selection
-        rho_out = self.partial(rho, 0, W[self.L - 1])
+        rho_out, reg = self.partial(rho, 0, W[self.L - 1])
         self.rho_last = rho_out.detach().clone()
+        self.reg = torch.mean(torch.tensor(reg_list))
+        print(f"Regularization: {self.reg.item():.6f}")
 
             # rho_test = rho_out[0, :, :]
             # trace = torch.trace(rho_test)
@@ -297,7 +300,7 @@ class MPSTPCP(nn.Module):
         new_rho = out.sum(dim=0)  # Sum over the Kraus index K => (N, d, d)
         return new_rho
 
-    def partial(self, rho: torch.Tensor, site: int, weight: torch.Tensor | None = None) -> torch.Tensor:
+    def partial(self, rho: torch.Tensor, site: int, weight: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Perform a partial trace over one qubit (site=0 or site=1)
         for a batch of two-qubit states, possibly *weighted* by `weight`.
@@ -310,6 +313,7 @@ class MPSTPCP(nn.Module):
             and we multiply each 'component' of the partial trace by weight[a].
         Returns:
             reduced_rho of shape (batch_size, d, d), i.e. a single-qubit density matrix.
+            reg of shape (batch_size,), i.e. the regularization term.
         """
         batch_size = rho.shape[0]
         assert rho.shape == (batch_size, self.d**2, self.d**2), (
@@ -340,6 +344,7 @@ class MPSTPCP(nn.Module):
             # i.e. sum over 'a' but multiply each slice by weight[a]
             assert weight.shape == (2,), f"weight must be shape (2,), got {weight.shape}"
             reduced = torch.einsum("n a c a d, a->n c d", rho_reshaped, weight ** 2)
+            reduced_var = torch.einsum("n a c a d, a->n c d", rho_reshaped, weight ** 4)
 
         elif site == 1:
             # Weighted partial trace
@@ -349,11 +354,15 @@ class MPSTPCP(nn.Module):
             assert weight.shape == (2,), f"weight must be shape (2,), got {weight.shape}"
             reduced = torch.einsum("n a c b c, c->n a b", rho_reshaped, weight ** 2)
             reduced = reduced.reshape(batch_size, self.d, self.d)
+            reduced_var = torch.einsum("n a c b c, c->n a b", rho_reshaped, weight ** 4)
         else:
             raise ValueError("site must be 0 or 1 for a 2-qubit system.")
 
         # print(reduced.shape)
-        return reduced / torch.einsum("nii->n", reduced).unsqueeze(-1).unsqueeze(-1)
+        mean = torch.einsum("nii->n", reduced)
+        var = torch.einsum("nii->n", reduced_var)
+        reg = torch.log(var / (mean ** 2))
+        return reduced / mean.unsqueeze(-1).unsqueeze(-1), reg
 
     def initialize_W(self, init_with: torch.Tensor | None = None, random_init: bool = False):
         if init_with is not None:
