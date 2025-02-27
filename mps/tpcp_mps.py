@@ -346,8 +346,8 @@ class MPSTPCP(nn.Module):
             # "n a c a d, a -> n c d"
             # i.e. sum over 'a' but multiply each slice by weight[a]
             assert weight.shape == (2,), f"weight must be shape (2,), got {weight.shape}"
-            reduced = torch.einsum("n a c a d, a->n c d", rho_reshaped, weight ** 2)
-            reduced_var = torch.einsum("n a c a d, a->n c d", rho_reshaped, weight ** 4)
+            reduced = torch.einsum("n a c a d, a->n c d", rho_reshaped, torch.abs(weight))
+            reduced_var = torch.einsum("n a c a d, a->n c d", rho_reshaped, weight ** 2)
 
         elif site == 1:
             # Weighted partial trace
@@ -355,9 +355,9 @@ class MPSTPCP(nn.Module):
             # We'll follow the same index pattern: "n a c b c, b->n a c"
             # then rename 'c' -> 'b' so shape is (n, a, b).
             assert weight.shape == (2,), f"weight must be shape (2,), got {weight.shape}"
-            reduced = torch.einsum("n a c b c, c->n a b", rho_reshaped, weight ** 2)
+            reduced = torch.einsum("n a c b c, c->n a b", rho_reshaped, torch.abs(weight))
             reduced = reduced.reshape(batch_size, self.d, self.d)
-            reduced_var = torch.einsum("n a c b c, c->n a b", rho_reshaped, weight ** 4)
+            reduced_var = torch.einsum("n a c b c, c->n a b", rho_reshaped, weight ** 2)
         else:
             raise ValueError("site must be 0 or 1 for a 2-qubit system.")
 

@@ -149,7 +149,7 @@ def mpsae_adaptive_train(
     # Initialize W: start with second column small (e.g., 0.05).
     W = torch.zeros(tpcp.L, 2, dtype=torch.float64, device=device)
     W[:, 0] = 1 
-    W[:, 1] = 0.02
+    W[:, 1] = 0.001
     tpcp.initialize_W(W)
 
     # --- Step 3: Determine lambda_final Using the Initial Loss Value ---
@@ -192,6 +192,7 @@ def mpsae_adaptive_train(
     while current_lambda < lambda_final and current_schedule_step <= total_schedule_steps:
         if current_schedule_step == total_schedule_steps:
             with torch.no_grad():
+                print("Forcing W to all ones")
                 W = torch.zeros(tpcp.L, 2, dtype=torch.float64, device=device)
                 W[:, 0] = 1 
                 W[:, 1] = 1
@@ -204,7 +205,7 @@ def mpsae_adaptive_train(
         while phase_epoch < max_epochs:
             # Create optimizers: one for the Kraus ops and one for W and r.
             optimizer = RiemannianAdam(tpcp.kraus_ops.parameters(), lr=lr, betas=(0.9, 0.999))
-            optimizer_weight = torch.optim.Adam([tpcp.W, tpcp.r], lr=0.01)
+            optimizer_weight = torch.optim.Adam([tpcp.W, tpcp.r], lr=lr)
 
             epoch_loss_sum = 0.0
             epoch_acc_sum = 0.0
