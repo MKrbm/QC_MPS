@@ -143,7 +143,7 @@ def run_training(mnist_args, remaining_args, dataloader, N):
         "--schedule_type",
         type=str,
         default="cosine",
-        choices=["linear", "polynomial", "soft_exponential", "cosine"],
+        choices=["linear", "polynomial", "soft_exponential", "cosine", "ratio_based"],
         help="Type of lambda schedule (default: cosine)."
     )
 

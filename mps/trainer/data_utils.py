@@ -53,9 +53,24 @@ def create_mnist_dataloader(
         norm = torch.sum(x, dim=-1, keepdim=True).clamp(min=1e-8)
         return x / norm
 
-    def filter_dataset(dataset, allowed_digits):
-        indices = [i for i in range(len(dataset)) if dataset[i][1] in allowed_digits]
-        return torch.utils.data.Subset(dataset, indices)
+
+    class FilteredDataset(torch.utils.data.Dataset):
+        def __init__(self, dataset, allowed_digits=[0,1]):
+            self.allowed_digits = allowed_digits
+            self.indices = [i for i, (_, label) in enumerate(dataset) if label in allowed_digits]
+            self.dataset = dataset
+
+            # Mapping original labels to [0,1,...]
+            self.label_to_index = {digit: idx for idx, digit in enumerate(allowed_digits)}
+
+        def __len__(self):
+            return len(self.indices)
+
+        def __getitem__(self, idx):
+            data, original_label = self.dataset[self.indices[idx]]
+            new_label = self.label_to_index[original_label]
+            return data, new_label
+
 
     transform = transforms.Compose([
         transforms.Resize(img_size),
@@ -67,7 +82,7 @@ def create_mnist_dataloader(
 
     # Load the MNIST dataset.
     dataset = datasets.MNIST(root=root, train=train, download=download, transform=transform)
-    dataset = filter_dataset(dataset, allowed_digits=allowed_digits)
+    dataset = FilteredDataset(dataset, allowed_digits=allowed_digits)
 
     if num_data is not None:
         dataset = torch.utils.data.Subset(dataset, range(num_data))

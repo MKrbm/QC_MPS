@@ -29,31 +29,50 @@ from mps.trainer.smps_trainer import smps_train
 # =============================================================================
 # Helper: Schedule Function
 # =============================================================================
-def get_scheduled_lambda(schedule_type, step, total_steps, lambda_initial, lambda_final, poly_power=2, k=0.1):
+def ratio_reg_value(r):
+    """
+    Compute the log-regularization value at ratio r = w2/w1, 
+    i.e. R(r) = log( 2(1 + r^2) / (1 + r)^2 ).
+    """
+    reg = math.log(2.0 * (1.0 + r**2) / ((1.0 + r)**2))
+    print(f"Ratio: {r}, Reg: {reg}")
+    return reg
+
+
+def get_scheduled_lambda(schedule_type, step, total_steps, lambda_initial, lambda_final, poly_power=2, k=0.1, ratio_target=None, current_loss=None):
     """
     Compute λ based on the scheduling strategy.
 
     Args:
-      schedule_type (str): 'linear', 'polynomial', 'soft_exponential', or 'cosine'
+      schedule_type (str): 'linear', 'polynomial', 'soft_exponential', 'cosine', or 'ratio_based'
       step (int): current scheduling step (0 <= step <= total_steps)
       total_steps (int): total number of scheduling steps.
       lambda_initial (float): initial λ value.
       lambda_final (float): final (target) λ value.
       poly_power (float): power for polynomial schedule.
       k (float): rate parameter for soft exponential schedule.
+      ratio_target (float, optional): target ratio for 'ratio_based' schedule.
+      current_loss (float, optional): current loss for 'ratio_based' schedule.
 
     Returns:
       float: scheduled λ.
     """
-    if schedule_type == "linear":
+    if schedule_type == "ratio_based":
+        if ratio_target is None or current_loss is None:
+            raise ValueError("Must provide ratio_target and current_loss for 'ratio_based' schedule.")
+        # Evaluate R(ratio_target)
+        Rr = ratio_reg_value(ratio_target)
+        # Avoid division by zero or extremely small denominators
+        return current_loss / max(Rr, 1e-12)
+    
+    # Otherwise, use your existing schedule logic.
+    elif schedule_type == "linear":
         return lambda_initial + (step / total_steps) * (lambda_final - lambda_initial)
     elif schedule_type == "polynomial":
         return lambda_initial + ((step / total_steps) ** poly_power) * (lambda_final - lambda_initial)
     elif schedule_type == "soft_exponential":
-        # λ = λ_initial + (λ_final - λ_initial) * (1 - exp(-k * step)) / (1 - exp(-k * total_steps))
         return lambda_initial + (lambda_final - lambda_initial) * (1 - math.exp(-k * step)) / (1 - math.exp(-k * total_steps))
     elif schedule_type == "cosine":
-        # cosine annealing from λ_initial to λ_final:
         return lambda_initial + (lambda_final - lambda_initial) * (1 - math.cos(math.pi * step / total_steps)) / 2
     else:
         raise ValueError(f"Unknown schedule_type: {schedule_type}")
@@ -172,16 +191,24 @@ def mpsae_adaptive_train(
     # --- Step 4: Scheduler Setup ---
     current_schedule_step = 0
     lambda_initial = 0.1
-    current_lambda = get_scheduled_lambda(
-        schedule_type,
-        current_schedule_step,
-        total_schedule_steps,
-        lambda_initial,
-        lambda_final,
-        poly_power,
-        k,
-    )
+    # current_lambda = get_scheduled_lambda(
+    #     schedule_type,
+    #     current_schedule_step,
+    #     total_schedule_steps,
+    #     lambda_initial,
+    #     lambda_final,
+    #     poly_power,
+    #     k,
+    #     ratio_target=0.0,
+    #     current_loss=None,
+    # )
+    current_lambda = lambda_initial
     print(f"Starting training with regularization scheduler. Initial λ = {current_lambda:.6f}")
+
+    # === Generate target_ratio list ===
+    import numpy as np
+    target_ratio = np.linspace(0, 1 - 1e-2, total_schedule_steps + 1, endpoint=True) ** (1/2)
+    print(f"Generated sqrt target_ratio schedule: {target_ratio}")
 
     # --- Step 5: Training Loop Over λ Phases ---
     metrics = {"loss": [], "accuracy": [], "lambda": [], "weight_rate": []}
@@ -189,14 +216,8 @@ def mpsae_adaptive_train(
 
     tpcp.train()
 
-    while current_lambda < lambda_final and current_schedule_step <= total_schedule_steps:
-        if current_schedule_step == total_schedule_steps:
-            with torch.no_grad():
-                print("Forcing W to all ones")
-                W = torch.zeros(tpcp.L, 2, dtype=torch.float64, device=device)
-                W[:, 0] = 1 
-                W[:, 1] = 1
-                tpcp.initialize_W(W)
+    for current_schedule_step in range(len(target_ratio)):
+
         print(f"\n=== Training Phase with λ = {current_lambda:.6f} (Schedule Step {current_schedule_step}/{total_schedule_steps}) ===")
         phase_epoch = 0
         conv_counter = 0
@@ -254,7 +275,7 @@ def mpsae_adaptive_train(
                     print(
                         f"[λ {current_lambda:.6f}] Epoch {phase_epoch+1}, Step {step+1}/{len(dataloader)} | "
                         f"Reg: {reg.item():.6f} | Batch Loss: {loss.item():.6f} | "
-                        f"Loss+Reg: {loss_with_reg.item():.6f} | Acc: {batch_acc.item():.2%} |"
+                        f"Loss+Reg: {loss_with_reg.item():.6f} | Acc: {batch_acc.item():.2%} | "
                         f"Weight Ratio: {weight_ratio.item():.6f}"
                     )
 
@@ -302,10 +323,36 @@ def mpsae_adaptive_train(
 
         # Update λ for the next phase.
         current_schedule_step += 1
-        new_lambda = get_scheduled_lambda(schedule_type, current_schedule_step, total_schedule_steps, lambda_initial, lambda_final, poly_power, k)
-        if new_lambda <= current_lambda:
-            print("Scheduled λ did not increase; ending training.")
+
+        if current_schedule_step == len(target_ratio):
             break
+        # inside the scheduling step loop (e.g., before entering epoch loop)
+        if schedule_type == "ratio_based":
+            new_lambda = get_scheduled_lambda(
+                schedule_type,
+                current_schedule_step,
+                total_schedule_steps,
+                lambda_initial,
+                lambda_final,
+                poly_power,
+                k,
+                ratio_target=target_ratio[current_schedule_step],
+                current_loss=avg_loss  # Assuming you calculate avg_loss from last epoch
+            )
+        else:
+            new_lambda = get_scheduled_lambda(
+                schedule_type,
+                current_schedule_step,
+                total_schedule_steps,
+                lambda_initial,
+                lambda_final,
+                poly_power,
+                k,
+            )
+
+        # if new_lambda <= current_lambda:
+        #     print("Scheduled λ did not increase; ending training.")
+        #     break
         current_lambda = new_lambda
 
     # Optionally, plot the training metrics.
