@@ -63,7 +63,7 @@ def get_scheduled_lambda(schedule_type, step, total_steps, lambda_initial, lambd
         # Evaluate R(ratio_target)
         Rr = ratio_reg_value(ratio_target)
         # Avoid division by zero or extremely small denominators
-        return current_loss / max(Rr, 1e-12)
+        return current_loss / max(10*Rr, 1e-12)
     
     # Otherwise, use your existing schedule logic.
     elif schedule_type == "linear":
@@ -181,6 +181,7 @@ def mpsae_adaptive_train(
         initial_accuracy = calculate_accuracy(initial_probs[:, 0], target_batch)
         print(f"Initial accuracy: {initial_accuracy.item():.2%}")
         initial_loss = nnloss(softmax_initial_probs, target_batch)
+        avg_loss = initial_loss.item()
         initial_reg = reg
     print(f"Initial loss for λ determination: {initial_loss.item():.6f}")
     print(f"Initial regularization weight: {initial_reg.item():.6f}")
@@ -190,24 +191,10 @@ def mpsae_adaptive_train(
 
     # --- Step 4: Scheduler Setup ---
     current_schedule_step = 0
-    lambda_initial = 0.1
-    # current_lambda = get_scheduled_lambda(
-    #     schedule_type,
-    #     current_schedule_step,
-    #     total_schedule_steps,
-    #     lambda_initial,
-    #     lambda_final,
-    #     poly_power,
-    #     k,
-    #     ratio_target=0.0,
-    #     current_loss=None,
-    # )
-    current_lambda = lambda_initial
-    print(f"Starting training with regularization scheduler. Initial λ = {current_lambda:.6f}")
 
     # === Generate target_ratio list ===
     import numpy as np
-    target_ratio = np.linspace(0, 1 - 1e-2, total_schedule_steps + 1, endpoint=True) ** (1/2)
+    target_ratio = np.linspace(1e-4, 1 - 1e-2, total_schedule_steps + 1, endpoint=True) ** (1/2)
     print(f"Generated sqrt target_ratio schedule: {target_ratio}")
 
     # --- Step 5: Training Loop Over λ Phases ---
@@ -216,7 +203,30 @@ def mpsae_adaptive_train(
 
     tpcp.train()
 
+
     for current_schedule_step in range(len(target_ratio)):
+        if schedule_type == "ratio_based":
+            current_lambda = get_scheduled_lambda(
+                schedule_type,
+                current_schedule_step,
+                total_schedule_steps,
+                0.1,
+                lambda_final,
+                poly_power,
+                k,
+                ratio_target=target_ratio[current_schedule_step],
+                current_loss=avg_loss  # Assuming you calculate avg_loss from last epoch
+            )
+        else:
+            current_lambda = get_scheduled_lambda(
+                schedule_type,
+                current_schedule_step,
+                total_schedule_steps,
+                0.1,
+                lambda_final,
+                poly_power,
+                k,
+            )
 
         print(f"\n=== Training Phase with λ = {current_lambda:.6f} (Schedule Step {current_schedule_step}/{total_schedule_steps}) ===")
         phase_epoch = 0
@@ -327,33 +337,6 @@ def mpsae_adaptive_train(
         if current_schedule_step == len(target_ratio):
             break
         # inside the scheduling step loop (e.g., before entering epoch loop)
-        if schedule_type == "ratio_based":
-            new_lambda = get_scheduled_lambda(
-                schedule_type,
-                current_schedule_step,
-                total_schedule_steps,
-                lambda_initial,
-                lambda_final,
-                poly_power,
-                k,
-                ratio_target=target_ratio[current_schedule_step],
-                current_loss=avg_loss  # Assuming you calculate avg_loss from last epoch
-            )
-        else:
-            new_lambda = get_scheduled_lambda(
-                schedule_type,
-                current_schedule_step,
-                total_schedule_steps,
-                lambda_initial,
-                lambda_final,
-                poly_power,
-                k,
-            )
-
-        # if new_lambda <= current_lambda:
-        #     print("Scheduled λ did not increase; ending training.")
-        #     break
-        current_lambda = new_lambda
 
     # Optionally, plot the training metrics.
     x_axis = range(1, len(metrics["loss"]) + 1)
