@@ -53,7 +53,7 @@ def create_mnist_dataloader(
         norm = torch.sum(x, dim=-1, keepdim=True).clamp(min=1e-8)
         return x / norm
 
-    def filter_dataset(dataset, allowed_digits=[0, 1]):
+    def filter_dataset(dataset, allowed_digits):
         indices = [i for i in range(len(dataset)) if dataset[i][1] in allowed_digits]
         return torch.utils.data.Subset(dataset, indices)
 

@@ -7,7 +7,7 @@ python train_mnist.py \
     --simple_epochs 5 \
     --epochs 20 \
     --lr 0.0001 \
-    --simple_lr 0.0001 \
+    --simple_lr 0.0001
 
     
 python train_mnist.py \
@@ -58,6 +58,7 @@ import numpy as np
 # Import dataloader and other training functions.
 from mps.trainer.data_utils import create_mnist_dataloader
 from mps.trainer.mps_trainer import umps_train
+from mps.trainer.umps_bp_trainer import umps_bp_train
 from mps.trainer.mpsae_trainer import mpsae_train
 from mps.trainer.tpcp_trainer import tpcp_train
 from mps.trainer.adaptive_mpsae_trainer import mpsae_adaptive_train
@@ -126,6 +127,12 @@ def main():
     umps_parser = subparsers.add_parser(
         "umps", help="Train uMPS on MNIST (digits 0 & 1)."
     )
+    umps_parser.add_argument(
+        "--check_bp",
+        action="store_true",
+        help="Check BP training (default: False)."
+    )
+    
 
     # ----- Subparser for MPSAE training -----
     mpsae_parser = subparsers.add_parser(
@@ -264,19 +271,34 @@ def main():
             dtype=torch.float64,
         )
     elif args.model == "umps":
-        _ = umps_train(
-            dataloader=dataloader,
-            device=device,
-            N=img_size * img_size,
-            chi=2,
-            d=2,
-            l=2,
-            layers=1,
-            epochs=args.epochs,
-            lr=args.lr,
-            log_steps=args.log_steps,
-            dtype=torch.float64,
-        )
+        if args.check_bp:
+            _ = umps_bp_train(
+                dataloader=dataloader,
+                device=device,
+                N=img_size * img_size,
+                chi=2,
+                d=2,
+                l=2,
+                layers=1,
+                epochs=args.epochs,
+                lr=args.lr,
+                log_steps=args.log_steps,
+                dtype=torch.float64,
+            )
+        else:
+            _ = umps_train(
+                dataloader=dataloader,
+                device=device,
+                N=img_size * img_size,
+                chi=2,
+                d=2,
+                l=2,
+                layers=1,
+                epochs=args.epochs,
+                lr=args.lr,
+                log_steps=args.log_steps,
+                dtype=torch.float64,
+            )
     elif args.model == "mpsae":
         if args.mode == "adaptive":
             # Use the adaptive lambda training function for MPSAE.

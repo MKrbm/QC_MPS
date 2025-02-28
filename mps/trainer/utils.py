@@ -90,10 +90,37 @@ def plot_training_metrics(x_axis, loss_vals, accuracy_vals, weight_ratio_vals=No
     
     fig.suptitle(title)
     fig.tight_layout()
-    # try:
-    #     filename_html = filename.replace(".png", ".html")
-    #     import mpld3
-    #     mpld3.save_html(fig, filename_html)
-    # except Exception as e:
     plt.savefig(filename, dpi=300)
+    plt.show()
+
+
+def plot_gradient_norms(x_axis, grad0, grad_mid, grad_last):
+    """
+    Plot the average gradient norms for the 0-th, N//2-th, and N-1-th qubits over epochs.
+    
+    Args:
+      x_axis (list or array): Epoch numbers.
+      grad0 (list or array): Average gradient norm for the 0-th qubit per epoch.
+      grad_mid (list or array): Average gradient norm for the middle (N//2-th) qubit per epoch.
+      grad_last (list or array): Average gradient norm for the last (N-1-th) qubit per epoch.
+    """
+    fig, axs = plt.subplots(3, 1, figsize=(8, 12))
+    
+    axs[0].plot(x_axis, grad0, marker='o', color='tab:blue')
+    axs[0].set_title("Gradient Norm - 0-th Qubit")
+    axs[0].set_xlabel("Epoch")
+    axs[0].set_ylabel("Gradient Norm")
+    
+    axs[1].plot(x_axis, grad_mid, marker='o', color='tab:green')
+    axs[1].set_title("Gradient Norm - N//2-th Qubit")
+    axs[1].set_xlabel("Epoch")
+    axs[1].set_ylabel("Gradient Norm")
+    
+    axs[2].plot(x_axis, grad_last, marker='o', color='tab:red')
+    axs[2].set_title("Gradient Norm - N-1-th Qubit")
+    axs[2].set_xlabel("Epoch")
+    axs[2].set_ylabel("Gradient Norm")
+    
+    fig.tight_layout()
+    plt.savefig("gradient_norms.png", dpi=300)
     plt.show()
