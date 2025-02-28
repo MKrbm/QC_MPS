@@ -149,24 +149,24 @@ def mpsae_adaptive_train(
     # Initialize W: start with second column small (e.g., 0.05).
     W = torch.zeros(tpcp.L, 2, dtype=torch.float64, device=device)
     W[:, 0] = 1 
-    W[:, 1] = 0.02
+    W[:, 1] = 0.001
     tpcp.initialize_W(W)
 
     # --- Step 3: Determine lambda_final Using the Initial Loss Value ---
     data_batch, target_batch = next(iter(dataloader))
     data_batch, target_batch = data_batch.to(device), target_batch.to(device)
     with torch.no_grad():
-        initial_probs = tpcp(data_batch, return_probs=True)
+        initial_probs, reg = tpcp(data_batch, return_probs=True, return_reg=True)
         softmax_initial_probs = logsoftmax(initial_probs)
         # print("Initial model outputs:", softmax_initial_probs)
         initial_accuracy = calculate_accuracy(initial_probs[:, 0], target_batch)
         print(f"Initial accuracy: {initial_accuracy.item():.2%}")
         initial_loss = nnloss(softmax_initial_probs, target_batch)
-        initial_reg_weight = tpcp_mps.regularize_weight(tpcp.W)
+        initial_reg = reg
     print(f"Initial loss for λ determination: {initial_loss.item():.6f}")
-    print(f"Initial regularization weight: {initial_reg_weight.item():.6f}")
+    print(f"Initial regularization weight: {initial_reg.item():.6f}")
     # Update lambda_final based on the initial loss.
-    lambda_final = initial_loss.item() / initial_reg_weight.item() * 10
+    lambda_final = initial_loss.item() / initial_reg.item() * 20
     print(f"Updated lambda_final set to: {lambda_final:.6f}")
 
     # --- Step 4: Scheduler Setup ---
@@ -187,7 +187,16 @@ def mpsae_adaptive_train(
     metrics = {"loss": [], "accuracy": [], "lambda": [], "weight_rate": []}
     epoch_total = 0
 
+    tpcp.train()
+
     while current_lambda < lambda_final and current_schedule_step <= total_schedule_steps:
+        if current_schedule_step == total_schedule_steps:
+            with torch.no_grad():
+                print("Forcing W to all ones")
+                W = torch.zeros(tpcp.L, 2, dtype=torch.float64, device=device)
+                W[:, 0] = 1 
+                W[:, 1] = 1
+                tpcp.initialize_W(W)
         print(f"\n=== Training Phase with λ = {current_lambda:.6f} (Schedule Step {current_schedule_step}/{total_schedule_steps}) ===")
         phase_epoch = 0
         conv_counter = 0
@@ -196,11 +205,12 @@ def mpsae_adaptive_train(
         while phase_epoch < max_epochs:
             # Create optimizers: one for the Kraus ops and one for W and r.
             optimizer = RiemannianAdam(tpcp.kraus_ops.parameters(), lr=lr, betas=(0.9, 0.999))
-            optimizer_weight = torch.optim.Adam([tpcp.W, tpcp.r], lr=lr * 3)
+            optimizer_weight = torch.optim.Adam([tpcp.W, tpcp.r], lr=lr)
 
             epoch_loss_sum = 0.0
             epoch_acc_sum = 0.0
             epoch_loss_with_reg_sum = 0.0
+            epoch_weight_ratio_sum = 0.0
             total_samples = 0
             t0 = time.time()
 
@@ -219,32 +229,33 @@ def mpsae_adaptive_train(
                 optimizer.zero_grad()
                 optimizer_weight.zero_grad()
 
-                outputs = tpcp(data, return_probs=True)
+                outputs, reg = tpcp(data, return_probs=True, return_reg=True)
                 softmax_outputs = logsoftmax(outputs)
                 loss = nnloss(softmax_outputs, target)
-                reg_weight = tpcp_mps.regularize_weight(tpcp.W)
-                loss_with_reg = loss + current_lambda * reg_weight
-
+                loss_with_reg = loss + current_lambda * reg
                 loss_with_reg.backward()
-                # print(tpcp.W.grad)
                 optimizer.step()
                 optimizer_weight.step()
                 tpcp.normalize_w_and_r()
                 tpcp.proj_stiefel(check_on_manifold=True, print_log=False)
+                weight_ratio = torch.abs(tpcp.W[:, 1].norm() / tpcp.W[:, 0].norm()).mean()
 
                 bs = target.size(0)
                 epoch_loss_sum += loss.item() * bs
                 epoch_loss_with_reg_sum += loss_with_reg.item() * bs
-                epoch_reg_weight_sum += reg_weight.item() * bs
+                epoch_reg_weight_sum += reg.item() * bs
                 total_samples += bs
                 batch_acc = calculate_accuracy(outputs[:, 0].detach(), target)
                 epoch_acc_sum += batch_acc.item() * bs
+                epoch_weight_ratio_sum += weight_ratio.item() * bs
+
 
                 if (step + 1) % log_steps == 0 or step == 0:
                     print(
                         f"[λ {current_lambda:.6f}] Epoch {phase_epoch+1}, Step {step+1}/{len(dataloader)} | "
-                        f"Reg: {reg_weight.item():.6f} | Batch Loss: {loss.item():.6f} | "
-                        f"Loss+Reg: {loss_with_reg.item():.6f} | Acc: {batch_acc.item():.2%}"
+                        f"Reg: {reg.item():.6f} | Batch Loss: {loss.item():.6f} | "
+                        f"Loss+Reg: {loss_with_reg.item():.6f} | Acc: {batch_acc.item():.2%} |"
+                        f"Weight Ratio: {weight_ratio.item():.6f}"
                     )
 
             # End of epoch: compute averages.
@@ -252,11 +263,12 @@ def mpsae_adaptive_train(
             avg_loss_with_reg = epoch_loss_with_reg_sum / total_samples
             avg_acc = epoch_acc_sum / total_samples
             avg_reg_weight = epoch_reg_weight_sum / total_samples
+            avg_weight_ratio = epoch_weight_ratio_sum / total_samples
             elapsed = time.time() - t0
             print(
                 f"[λ {current_lambda:.6f}] Epoch {phase_epoch+1} | Avg Reg: {avg_reg_weight:.6f} | "
                 f"Avg Loss: {avg_loss:.6f} | Avg Loss+Reg: {avg_loss_with_reg:.6f} | "
-                f"Acc: {avg_acc:.2%} | Time: {elapsed:.2f}s"
+                f"Acc: {avg_acc:.2%} | Time: {elapsed:.2f}s | Weight Ratio: {avg_weight_ratio:.6f}"
             )
 
             # Record metrics.
