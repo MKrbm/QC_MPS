@@ -47,7 +47,6 @@ class Test_UMPS_weightedMPS:
         
         return unitary.reshape(self.chi**2, self.chi**2)
 
-
     def test_random_unitary_random_input(self):
         """
         Test the output match for random binary input and a random unitary.
