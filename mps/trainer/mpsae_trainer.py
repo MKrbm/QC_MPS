@@ -8,6 +8,7 @@ import time
 import torch
 import matplotlib.pyplot as plt
 import geoopt
+import numpy as np
 
 # Import the required models and optimizers.
 from mps.simple_mps import SimpleMPS
@@ -53,8 +54,9 @@ def mpsae_train(
         - 'simple_mps_losses': list of SimpleMPS epoch losses
         - 'tpcp_metrics_by_w': dict mapping weight value to metrics (loss, accuracy, weight ratio)
     """
+    steps = 16
     if weight_values is None:
-        weight_values = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1]
+        weight_values = np.linspace(0, 1, steps, endpoint=True) ** (1/2.0)
 
     manifold_map = {
         "Exact": ManifoldType.EXACT,

@@ -7,7 +7,7 @@ python train_mnist.py \
     --simple_epochs 5 \
     --epochs 20 \
     --lr 0.0001 \
-    --simple_lr 0.0001 \
+    --simple_lr 0.0001
 
     
 python train_mnist.py \
@@ -58,6 +58,7 @@ import numpy as np
 # Import dataloader and other training functions.
 from mps.trainer.data_utils import create_mnist_dataloader
 from mps.trainer.mps_trainer import umps_train
+from mps.trainer.umps_bp_trainer import umps_bp_train
 from mps.trainer.mpsae_trainer import mpsae_train
 from mps.trainer.tpcp_trainer import tpcp_train
 from mps.trainer.adaptive_mpsae_trainer import mpsae_adaptive_train
