@@ -95,8 +95,8 @@ def main():
     args, remaining_args = parser.parse_known_args()
 
     # Print number of CPUs.
-    num_cpus = multiprocessing.cpu_count()
-    print(f"Number of CPUs available: {num_cpus}")
+    # num_cpus = multiprocessing.cpu_count()
+    # print(f"Number of CPUs available: {num_cpus}")
 
     # Set random seeds if provided.
     if args.seed is not None:
