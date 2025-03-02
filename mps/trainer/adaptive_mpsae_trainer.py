@@ -2,8 +2,8 @@
 """
 Module for training TPCP with a regularization scheduler.
 This training function uses several scheduling strategies (linear, polynomial,
-soft exponential, cosine) to control the regularization coefficient (λ) that
-multiplies the regularization term. The training proceeds in phases: at each phase,
+soft exponential, cosine, ratio_based) to control the regularization coefficient (λ)
+that multiplies the regularization term. The training proceeds in phases: at each phase,
 the model is trained until convergence (using criteria similar to mpsae_train);
 if a spike in the loss is detected, the λ update is temporarily held.
 Once convergence is reached for the current λ, the scheduler increases λ and training continues.
@@ -29,17 +29,7 @@ from mps.trainer.smps_trainer import smps_train
 # =============================================================================
 # Helper: Schedule Function
 # =============================================================================
-def ratio_reg_value(r):
-    """
-    Compute the log-regularization value at ratio r = w2/w1, 
-    i.e. R(r) = log( 2(1 + r^2) / (1 + r)^2 ).
-    """
-    reg = math.log(2.0 * (1.0 + r**2) / ((1.0 + r)**2))
-    print(f"Ratio: {r}, Reg: {reg}")
-    return reg
-
-
-def get_scheduled_lambda(schedule_type, step, total_steps, lambda_initial, lambda_final, poly_power=2, k=0.1, ratio_target=None, current_loss=None):
+def get_scheduled_lambda(schedule_type, step, total_steps, lambda_initial, lambda_final, poly_power=2, k=0.1, srpq_target=None, current_loss=None):
     """
     Compute λ based on the scheduling strategy.
 
@@ -51,21 +41,18 @@ def get_scheduled_lambda(schedule_type, step, total_steps, lambda_initial, lambd
       lambda_final (float): final (target) λ value.
       poly_power (float): power for polynomial schedule.
       k (float): rate parameter for soft exponential schedule.
-      ratio_target (float, optional): target ratio for 'ratio_based' schedule.
+      srpq_target (float, optional): target success rate per qubit for 'ratio_based' schedule.
       current_loss (float, optional): current loss for 'ratio_based' schedule.
 
     Returns:
       float: scheduled λ.
     """
     if schedule_type == "ratio_based":
-        if ratio_target is None or current_loss is None:
-            raise ValueError("Must provide ratio_target and current_loss for 'ratio_based' schedule.")
-        # Evaluate R(ratio_target)
-        Rr = ratio_reg_value(ratio_target)
-        # Avoid division by zero or extremely small denominators
-        return current_loss / max(10*Rr, 1e-12)
-    
-    # Otherwise, use your existing schedule logic.
+        if srpq_target is None or current_loss is None:
+            raise ValueError("Must provide srpq_target and current_loss for 'ratio_based' schedule.")
+        neg_log_srpq = -math.log(srpq_target)
+        # Set λ = loss / (-log(srpq_target)) * (1/10)
+        return current_loss / max(neg_log_srpq, 1e-12) * 0.1
     elif schedule_type == "linear":
         return lambda_initial + (step / total_steps) * (lambda_final - lambda_initial)
     elif schedule_type == "polynomial":
@@ -91,7 +78,7 @@ def mpsae_adaptive_train(
     mps_lr=0.01,
     mps_log_steps=10,
     total_schedule_steps=10,
-    schedule_type="cosine",  # choose among 'linear', 'polynomial', 'soft_exponential', 'cosine'
+    schedule_type="cosine",  # choose among 'linear', 'polynomial', 'soft_exponential', 'cosine', 'ratio_based'
     poly_power=2,
     k=0.1,
     max_epochs=10,
@@ -119,7 +106,7 @@ def mpsae_adaptive_train(
       from the first mini-batch when building the MPSTPCP model.
 
     Returns:
-      dict: metrics containing lists for loss, accuracy, λ values, and weight ratios.
+      dict: metrics containing lists for loss, accuracy, λ values, and SRPQ.
     """
     manifold_map = {
         "Exact": tpcp_mps.ManifoldType.EXACT,
@@ -177,7 +164,6 @@ def mpsae_adaptive_train(
     with torch.no_grad():
         initial_probs, reg = tpcp(data_batch, return_probs=True, return_reg=True)
         softmax_initial_probs = logsoftmax(initial_probs)
-        # print("Initial model outputs:", softmax_initial_probs)
         initial_accuracy = calculate_accuracy(initial_probs[:, 0], target_batch)
         print(f"Initial accuracy: {initial_accuracy.item():.2%}")
         initial_loss = nnloss(softmax_initial_probs, target_batch)
@@ -192,19 +178,20 @@ def mpsae_adaptive_train(
     # --- Step 4: Scheduler Setup ---
     current_schedule_step = 0
 
-    # === Generate target_ratio list ===
+    # === Generate target SRPQ list ===
+    # Here we generate target success rate per qubit values (sqrt transformation applied)
     import numpy as np
-    target_ratio = np.linspace(1e-4, 1 - 1e-2, total_schedule_steps + 1, endpoint=True) ** (1/2)
-    print(f"Generated sqrt target_ratio schedule: {target_ratio}")
+    target_srpq = np.linspace(1e-4, 1 - 1e-2, total_schedule_steps + 1, endpoint=True) ** (1/2)
+    print(f"Generated sqrt target_srpq schedule: {target_srpq}")
 
     # --- Step 5: Training Loop Over λ Phases ---
-    metrics = {"loss": [], "accuracy": [], "lambda": [], "weight_rate": []}
+    metrics = {"loss": [], "accuracy": [], "lambda": [], "srpq": []}
     epoch_total = 0
 
     tpcp.train()
 
-
-    for current_schedule_step in range(len(target_ratio)):
+    for current_schedule_step in range(len(target_srpq)):
+        # For ratio_based strategy, use target_srpq for the current phase.
         if schedule_type == "ratio_based":
             current_lambda = get_scheduled_lambda(
                 schedule_type,
@@ -214,8 +201,8 @@ def mpsae_adaptive_train(
                 lambda_final,
                 poly_power,
                 k,
-                ratio_target=target_ratio[current_schedule_step],
-                current_loss=avg_loss  # Assuming you calculate avg_loss from last epoch
+                srpq_target=target_srpq[current_schedule_step],
+                current_loss=avg_loss  # Using the avg_loss from the last epoch
             )
         else:
             current_lambda = get_scheduled_lambda(
@@ -241,18 +228,9 @@ def mpsae_adaptive_train(
             epoch_loss_sum = 0.0
             epoch_acc_sum = 0.0
             epoch_loss_with_reg_sum = 0.0
-            epoch_weight_ratio_sum = 0.0
+            epoch_srpq_sum = 0.0
             total_samples = 0
             t0 = time.time()
-
-            # Add random noise to the weight to avoid local minima.
-            # noise_std = 0.1  # standard deviation for noise
-            # with torch.no_grad():
-                # tpcp.W.add_(torch.randn_like(tpcp.W) * noise_std)
-            #     tpcp.normalize_w_and_r()
-
-            # Initialize sum for regularization weight.
-            epoch_reg_weight_sum = 0.0
 
             # Loop over mini-batches.
             for step, (data, target) in enumerate(dataloader):
@@ -269,44 +247,42 @@ def mpsae_adaptive_train(
                 optimizer_weight.step()
                 tpcp.normalize_w_and_r()
                 tpcp.proj_stiefel(check_on_manifold=True, print_log=False)
-                weight_ratio = torch.abs(tpcp.W[:, 1].norm() / tpcp.W[:, 0].norm()).mean()
+                # Compute success rate per qubit (SRPQ)
+                srpq = torch.exp(-reg)
 
                 bs = target.size(0)
                 epoch_loss_sum += loss.item() * bs
                 epoch_loss_with_reg_sum += loss_with_reg.item() * bs
-                epoch_reg_weight_sum += reg.item() * bs
                 total_samples += bs
                 batch_acc = calculate_accuracy(outputs[:, 0].detach(), target)
                 epoch_acc_sum += batch_acc.item() * bs
-                epoch_weight_ratio_sum += weight_ratio.item() * bs
-
+                epoch_srpq_sum += srpq.item() * bs
 
                 if (step + 1) % log_steps == 0 or step == 0:
                     print(
                         f"[λ {current_lambda:.6f}] Epoch {phase_epoch+1}, Step {step+1}/{len(dataloader)} | "
                         f"Reg: {reg.item():.6f} | Batch Loss: {loss.item():.6f} | "
                         f"Loss+Reg: {loss_with_reg.item():.6f} | Acc: {batch_acc.item():.2%} | "
-                        f"Weight Ratio: {weight_ratio.item():.6f}"
+                        f"SRPQ: {srpq.item():.6f}"
                     )
 
             # End of epoch: compute averages.
             avg_loss = epoch_loss_sum / total_samples
             avg_loss_with_reg = epoch_loss_with_reg_sum / total_samples
             avg_acc = epoch_acc_sum / total_samples
-            avg_reg_weight = epoch_reg_weight_sum / total_samples
-            avg_weight_ratio = epoch_weight_ratio_sum / total_samples
+            avg_srpq = epoch_srpq_sum / total_samples
             elapsed = time.time() - t0
             print(
-                f"[λ {current_lambda:.6f}] Epoch {phase_epoch+1} | Avg Reg: {avg_reg_weight:.6f} | "
-                f"Avg Loss: {avg_loss:.6f} | Avg Loss+Reg: {avg_loss_with_reg:.6f} | "
-                f"Acc: {avg_acc:.2%} | Time: {elapsed:.2f}s | Weight Ratio: {avg_weight_ratio:.6f}"
+                f"[λ {current_lambda:.6f}] Epoch {phase_epoch+1} | Avg Loss: {avg_loss:.6f} | "
+                f"Avg Loss+Reg: {avg_loss_with_reg:.6f} | Acc: {avg_acc:.2%} | "
+                f"SRPQ: {avg_srpq:.6f} | Time: {elapsed:.2f}s"
             )
 
             # Record metrics.
             metrics["loss"].append(avg_loss)
             metrics["accuracy"].append(avg_acc)
             metrics["lambda"].append(current_lambda)
-            metrics["weight_rate"].append(avg_reg_weight)
+            metrics["srpq"].append(avg_srpq)
 
             # --- Check for convergence ---
             if prev_epoch_loss is not None:
@@ -326,6 +302,11 @@ def mpsae_adaptive_train(
             phase_epoch += 1
             epoch_total += 1
 
+            # --- For ratio_based, also break if the target SRPQ is reached ---
+            if schedule_type == "ratio_based" and avg_srpq >= target_srpq[current_schedule_step]:
+                print(f"Target SRPQ {target_srpq[current_schedule_step]:.6f} reached (current: {avg_srpq:.6f}).")
+                break
+
             # If convergence is achieved for the current λ phase, break.
             if conv_counter >= patience:
                 print(f"Convergence achieved for λ {current_lambda:.6f} after {conv_counter} stable epochs.")
@@ -334,7 +315,7 @@ def mpsae_adaptive_train(
         # Update λ for the next phase.
         current_schedule_step += 1
 
-        if current_schedule_step == len(target_ratio):
+        if current_schedule_step == len(target_srpq):
             break
         # inside the scheduling step loop (e.g., before entering epoch loop)
 
@@ -344,7 +325,7 @@ def mpsae_adaptive_train(
         x_axis,
         metrics["loss"],
         metrics["accuracy"],
-        weight_ratio_vals=metrics.get("weight_rate", None),
+        weight_ratio_vals=metrics.get("srpq", None),  # now using SRPQ
         lambda_vals=metrics.get("lambda", None),
         title="TPCP Training Metrics over Epochs",
         filename="tpcp_training_metrics.png",
