@@ -3,3 +3,15 @@
 **/data/*
 **/__pycache__/*
 **/__pycache__
+**/*.csv
+**/*.log
+**/*.out
+**/*.err
+**/*.png
+**/*.pdf
+**/*.pt
+**/*.log.gz
+**/*.log.gz.part
+**/*.log.gz.part.1
+**/*.log.gz.part.2
+**/*.log.gz.part.3
