@@ -7,6 +7,9 @@
 **/*.log
 **/*.out
 **/*.err
+**/*.png
+**/*.pdf
+**/*.pt
 **/*.log.gz
 **/*.log.gz.part
 **/*.log.gz.part.1

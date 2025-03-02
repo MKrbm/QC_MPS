@@ -133,7 +133,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     N = 16 * 16       # Flattened 16x16 images.
     chi = 2           # Bond dimension.
-    epochs = 200      # Number of epochs.
+    epochs = 400      # Number of epochs.
     lr = 0.0001      # Learning rate.
     log_steps = 10    # Logging frequency.
 
@@ -181,13 +181,13 @@ if __name__ == "__main__":
     batch_filename = os.path.join(metrics_dir, f"run_{seed:04d}_batch_losses.csv")
     batch_df.to_csv(batch_filename, index=False)
 
-    # Save gradients CSVs.
+    # Save all gradients into one CSV.
+    grad_data = {"Epoch": list(range(1, len(next(iter(metrics["gradients"].values()))) + 1))}
     for i in metrics["gradients"]:
-        grad_df = pd.DataFrame({
-            "Epoch": list(range(1, len(metrics["gradients"][i]) + 1)),
-            f"Grad_{i}": metrics["gradients"][i],
-        })
-        grad_filename = os.path.join(metrics_dir, f"run_{seed:04d}_grad_{i}.csv")
-        grad_df.to_csv(grad_filename, index=False)
+        grad_data[f"Grad_{i}"] = metrics["gradients"][i]
+    
+    grad_df = pd.DataFrame(grad_data)
+    grad_filename = os.path.join(metrics_dir, f"run_{seed:04d}_gradients.csv")
+    grad_df.to_csv(grad_filename, index=False)
 
     print(f"Run with seed {seed} metrics saved in folder '{metrics_dir}'.")
