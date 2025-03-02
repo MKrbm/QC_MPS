@@ -2,7 +2,7 @@
 """
 Module for training TPCP with a regularization scheduler.
 This training function uses several scheduling strategies (linear, polynomial,
-soft exponential, cosine, ratio_based) to control the regularization coefficient (λ)
+soft exponential, cosine, sr_base) to control the regularization coefficient (λ)
 that multiplies the regularization term. The training proceeds in phases: at each phase,
 the model is trained until convergence (using criteria similar to mpsae_train);
 if a spike in the loss is detected, the λ update is temporarily held.
@@ -16,6 +16,8 @@ import time
 import torch
 import math
 import matplotlib.pyplot as plt
+from pathlib import Path
+import pandas as pd
 
 # Import required functions and modules from the MPS package.
 from mps import tpcp_mps  # contains MPSTPCP and regularize_weight
@@ -34,22 +36,22 @@ def get_scheduled_lambda(schedule_type, step, total_steps, lambda_initial, lambd
     Compute λ based on the scheduling strategy.
 
     Args:
-      schedule_type (str): 'linear', 'polynomial', 'soft_exponential', 'cosine', or 'ratio_based'
+      schedule_type (str): 'linear', 'polynomial', 'soft_exponential', 'cosine', or 'sr_base'
       step (int): current scheduling step (0 <= step <= total_steps)
       total_steps (int): total number of scheduling steps.
       lambda_initial (float): initial λ value.
       lambda_final (float): final (target) λ value.
       poly_power (float): power for polynomial schedule.
       k (float): rate parameter for soft exponential schedule.
-      srpq_target (float, optional): target success rate per qubit for 'ratio_based' schedule.
-      current_loss (float, optional): current loss for 'ratio_based' schedule.
+      srpq_target (float, optional): target success rate per qubit for 'sr_base' schedule.
+      current_loss (float, optional): current loss for 'sr_base' schedule.
 
     Returns:
       float: scheduled λ.
     """
-    if schedule_type == "ratio_based":
+    if schedule_type == "sr_base":
         if srpq_target is None or current_loss is None:
-            raise ValueError("Must provide srpq_target and current_loss for 'ratio_based' schedule.")
+            raise ValueError("Must provide srpq_target and current_loss for 'sr_base' schedule.")
         neg_log_srpq = -math.log(srpq_target)
         # Set λ = loss / (-log(srpq_target)) * (1/10)
         return current_loss / max(neg_log_srpq, 1e-12) * 0.1
@@ -78,7 +80,7 @@ def mpsae_adaptive_train(
     mps_lr=0.01,
     mps_log_steps=10,
     total_schedule_steps=10,
-    schedule_type="cosine",  # choose among 'linear', 'polynomial', 'soft_exponential', 'cosine', 'ratio_based'
+    schedule_type="cosine",  # choose among 'linear', 'polynomial', 'soft_exponential', 'cosine', 'sr_base'
     poly_power=2,
     k=0.1,
     max_epochs=10,
@@ -181,7 +183,8 @@ def mpsae_adaptive_train(
     # === Generate target SRPQ list ===
     # Here we generate target success rate per qubit values (sqrt transformation applied)
     import numpy as np
-    target_srpq = np.linspace(1e-4, 1 - 1e-2, total_schedule_steps + 1, endpoint=True) ** (1/2)
+    target_srpq = np.linspace((0.5**2), 1, total_schedule_steps + 1, endpoint=True) ** (1/2)
+    target_srpq[-1] = 0.99
     print(f"Generated sqrt target_srpq schedule: {target_srpq}")
 
     # --- Step 5: Training Loop Over λ Phases ---
@@ -191,8 +194,9 @@ def mpsae_adaptive_train(
     tpcp.train()
 
     for current_schedule_step in range(len(target_srpq)):
-        # For ratio_based strategy, use target_srpq for the current phase.
-        if schedule_type == "ratio_based":
+        # For sr_base strategy, use target_srpq for the current phase.
+        if schedule_type == "sr_base":
+            print(f"Target SRPQ for current phase: {target_srpq[current_schedule_step]:.6f}")
             current_lambda = get_scheduled_lambda(
                 schedule_type,
                 current_schedule_step,
@@ -302,8 +306,8 @@ def mpsae_adaptive_train(
             phase_epoch += 1
             epoch_total += 1
 
-            # --- For ratio_based, also break if the target SRPQ is reached ---
-            if schedule_type == "ratio_based" and avg_srpq >= target_srpq[current_schedule_step]:
+            # --- For sr_base, also break if the target SRPQ is reached ---
+            if schedule_type == "sr_base" and avg_srpq >= target_srpq[current_schedule_step]:
                 print(f"Target SRPQ {target_srpq[current_schedule_step]:.6f} reached (current: {avg_srpq:.6f}).")
                 break
 
@@ -321,6 +325,28 @@ def mpsae_adaptive_train(
 
     # Optionally, plot the training metrics.
     x_axis = range(1, len(metrics["loss"]) + 1)
+    # --- Save metrics to CSV ---
+    # Build folder name from hyperparameters (excluding epoch-related parameters).
+    folder_name1 = (
+        f"schedule_{schedule_type}_steps_{total_schedule_steps}_"
+        f"{manifold}"
+    )
+    folder_name2 = (
+        f"lr_{lr}_epochs_{max_epochs}"
+    )
+
+    base_dir = Path("metrics/aemps")
+    folder_path = base_dir / folder_name1 / folder_name2
+    folder_path.mkdir(parents=True, exist_ok=True)
+
+    # Use max_epochs as the epoch_size for the CSV file name.
+    csv_filename = f"metrics.csv"
+    csv_filepath = folder_path / csv_filename
+
+    # Convert metrics dictionary to a DataFrame and save.
+    df_metrics = pd.DataFrame(metrics)
+    df_metrics.to_csv(csv_filepath, index_label="epoch")
+
     utils.plot_training_metrics(
         x_axis,
         metrics["loss"],
@@ -328,7 +354,14 @@ def mpsae_adaptive_train(
         weight_ratio_vals=metrics.get("srpq", None),  # now using SRPQ
         lambda_vals=metrics.get("lambda", None),
         title="TPCP Training Metrics over Epochs",
-        filename="tpcp_training_metrics.png",
+        filename=(folder_path / "tpcp_training_metrics.png").resolve().as_posix(),
     )
+    print(f"Metrics saved to: {csv_filepath}")
+
+    # Save the trained model
+    model_filename = f"tpcp_model_{max_epochs}.pt"
+    model_filepath = folder_path / model_filename
+    torch.save(tpcp.state_dict(), model_filepath)
+    print(f"Model saved to: {model_filepath}")
 
     return metrics
