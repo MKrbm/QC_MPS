@@ -54,6 +54,7 @@ python train_mnist.py \
 import argparse
 import torch
 import numpy as np
+import multiprocessing
 
 # Import dataloader and other training functions.
 from mps.trainer.data_utils import create_mnist_dataloader
@@ -93,6 +94,10 @@ def main():
     # Parse common arguments and leave remaining args for model-specific options.
     args, remaining_args = parser.parse_known_args()
 
+    # Print number of CPUs.
+    num_cpus = multiprocessing.cpu_count()
+    print(f"Number of CPUs available: {num_cpus}")
+
     # Set random seeds if provided.
     if args.seed is not None:
         torch.manual_seed(args.seed)
@@ -106,8 +111,11 @@ def main():
 
     # Create a MNIST DataLoader for digits 0 and 1.
     img_size = 16
+    allowed_digits = [3, 5]
+
+    print(f"Digits used for training: {allowed_digits}")
     dataloader = create_mnist_dataloader(
-        allowed_digits=[1, 4],
+        allowed_digits=allowed_digits,
         img_size=img_size,
         root="data",
         train=True,
