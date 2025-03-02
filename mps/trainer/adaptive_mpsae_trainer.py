@@ -23,6 +23,7 @@ import time
 import math
 import torch
 import matplotlib.pyplot as plt
+import numpy as np
 from pathlib import Path
 import pandas as pd
 
@@ -191,9 +192,8 @@ def mpsae_adaptive_train(
 
     # --- Step 4: Scheduler Setup ---
     # Generate target SRPQ list.
-    import numpy as np
     target_srpq = np.linspace((0.5**2), 1, total_schedule_steps + 1, endpoint=True) ** (1/2)
-    target_srpq[-1] = 0.99
+    target_srpq[-1] = 0.98
     print(f"Generated sqrt target_srpq schedule: {target_srpq}")
 
     # --- Step 5: Main Training Loop Over λ Phases ---

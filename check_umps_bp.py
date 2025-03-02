@@ -143,7 +143,7 @@ if __name__ == "__main__":
     print("Metrics directory created.")
 
     dataloader = create_mnist_dataloader(
-        allowed_digits=[3, 8],
+        allowed_digits=[3, 5],
         img_size=16,
         root="data",
         train=True,
