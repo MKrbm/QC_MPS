@@ -106,7 +106,7 @@ def main():
     # Create a MNIST DataLoader for digits 0 and 1.
     img_size = 16
     dataloader = create_mnist_dataloader(
-        allowed_digits=[3, 8],
+        allowed_digits=[1, 4],
         img_size=img_size,
         root="data",
         train=True,
