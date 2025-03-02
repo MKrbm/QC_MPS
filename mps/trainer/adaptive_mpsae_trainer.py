@@ -197,7 +197,7 @@ def mpsae_adaptive_train(
                 schedule_type,
                 current_schedule_step,
                 total_schedule_steps,
-                0.1,
+                0.05,
                 lambda_final,
                 poly_power,
                 k,
