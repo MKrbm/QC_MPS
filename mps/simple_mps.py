@@ -76,6 +76,7 @@ class MPS(nn.Module):
         N: int, 
         chi_max: int, 
         d: int, 
+        eps: float = 1e-2,
         identity: bool = False,
         device: torch.device = torch.device("cpu"), 
         dtype: torch.dtype = torch.float64
@@ -88,9 +89,9 @@ class MPS(nn.Module):
         self.device = device
         self.dtype = dtype
 
-        self.initialize_params()
+        self.initialize_params(std=eps)
     
-    def initialize_params(self, std = 1e-3):
+    def initialize_params(self, std = 1e-2):
 
         self.mps_shapes = [(self.d, self.chi_max)] + [(self.chi_max, self.d, self.chi_max)] * (self.N - 1) + [(self.chi_max, self.d)]
 
@@ -121,6 +122,7 @@ class MPS(nn.Module):
         return [torch.tensor(t, dtype=self.dtype).reshape(s) for t, s in zip(mpstate.tensors, self.mps_shapes)]
     
     def set_params(self, params: list[torch.Tensor]):
+        assert len(params) == len(self.params), "Number of parameters must match, but got {} and {}".format(len(params), len(self.params))
         for i, param in enumerate(params):
             self.params[i].data[:] = param
 
@@ -149,7 +151,8 @@ class SimpleMPS(nn.Module):
         optimize: str = "auto",
         device: torch.device = torch.device("cpu"),
         dtype: torch.dtype = torch.float64,
-        seed: int = 0
+        seed: int = 0,
+        eps: float = 1e-2
     ):
         super().__init__()
         # super().__init__(*args, **kwargs)
@@ -170,7 +173,7 @@ class SimpleMPS(nn.Module):
         self.dtype = dtype
         self.is_initialized = False
         self.Sz = torch.tensor([[1, 0], [0, -1]], dtype=self.dtype, device=self.device)
-        self.mps = MPS(N, chi, d, True, device, dtype)
+        self.mps = MPS(N, chi, d, eps=eps, identity=True, device=device, dtype=dtype)
         self.ops = []
         self.left_qubit_inds = []
         self.left_mps_inds = []
@@ -254,3 +257,106 @@ class SimpleMPS(nn.Module):
             self.ops[self.left_qubit_inds[i]] = X[i]
         # measurement qubits
         return torch.abs(oe.contract(self.estr_mps, *self.ops, backend="torch", optimize=self.path))
+
+    def compressed(self, new_chi: int):
+        """
+        Create a new instance of SimpleMPS with compressed (lower bond dimension)
+        MPS parameters using SVD-based truncation with einsum contractions.
+        
+        Even if mathematically the truncation gives a rank r < new_chi,
+        we force the bond dimension to be new_chi by padding the extra elements with zeros.
+        
+        The original model remains unchanged.
+        
+        Returns:
+            new_instance (SimpleMPS): A new SimpleMPS instance with bond dimension new_chi.
+        """
+        old_params = self.mps.params  # original list of MPS tensors
+        new_params = []
+
+        # --- Compress the first tensor ---
+        # Assume the first tensor A0 has shape (d, old_chi)
+        A0 = old_params[0]
+        d = A0.shape[0]
+        U, S, Vh = torch.linalg.svd(A0, full_matrices=False)
+        # Mathematically, we would have r0 = min(new_chi, S.shape[0])
+        r0 = min(new_chi, S.shape[0])
+        # Truncate U to (d, r0)
+        U_trunc = U[:, :r0]
+        # Pad U_trunc to (d, new_chi) by filling the remaining columns with zeros
+        new_A0 = torch.zeros(d, new_chi, dtype=A0.dtype, device=A0.device)
+        new_A0[:, :r0] = U_trunc
+        new_params.append(new_A0)
+
+        # Build the bond tensor B = diag(S) @ Vh using einsum.
+        # B is initially of shape (r0, old_chi)
+        B = torch.einsum('i,ij->ij', S[:r0], Vh[:r0, :])
+        # Pad B to shape (new_chi, old_chi)
+        old_bond = B.shape[1]
+        B_padded = torch.zeros(new_chi, old_bond, dtype=B.dtype, device=B.device)
+        B_padded[:r0, :] = B
+        B = B_padded
+
+        # --- Compress intermediate tensors ---
+        # For tensors 1 to N-2, assume each tensor has shape (old_chi, d, old_chi)
+        for i in range(1, self.N):
+            Ai = old_params[i]
+            # Contract B (shape: (r_prev, old_chi)) with Ai (shape: (old_chi, d, old_chi))
+            # Result T has shape: (r_prev, d, old_chi)
+            T = torch.einsum('ab,bpg->apg', B, Ai)
+            r_prev, d_val, chi_right = T.shape
+
+            # Reshape T into a matrix for SVD: shape (r_prev * d, chi_right)
+            T_mat = T.reshape(r_prev * d_val, chi_right)
+            U, S, Vh = torch.linalg.svd(T_mat, full_matrices=False)
+            r_new = min(new_chi, S.shape[0])
+            U_trunc = U[:, :r_new]   # shape: (r_prev*d, r_new)
+            S_trunc = S[:r_new]        # shape: (r_new,)
+            Vh_trunc = Vh[:r_new, :]    # shape: (r_new, chi_right)
+
+            # Reshape U_trunc back into a 3-index tensor: (r_prev, d, r_new)
+            A_temp = U_trunc.reshape(r_prev, d_val, r_new)
+            # Pad A_temp to shape (r_prev, d, new_chi)
+            new_Ai = torch.zeros(r_prev, d_val, new_chi, dtype=A_temp.dtype, device=A_temp.device)
+            new_Ai[:, :, :r_new] = A_temp
+            new_params.append(new_Ai)
+
+            # Update bond tensor B: B_new is shape (r_new, chi_right)
+            B_new = torch.einsum('i,ij->ij', S_trunc, Vh_trunc)
+            # Pad B_new to shape (new_chi, chi_right)
+            B_padded = torch.zeros(new_chi, chi_right, dtype=B_new.dtype, device=B_new.device)
+            B_padded[:r_new, :] = B_new
+            B = B_padded
+
+        # --- Compress the last tensor ---
+        # Assume the last tensor has shape (old_chi, l)
+        A_last = old_params[-1]
+        # Contract the final bond tensor B (shape: (r_last, old_chi)) with A_last (shape: (old_chi, l))
+        T = torch.einsum('ab,bl->al', B, A_last)  # resulting shape: (r_last, l)
+        r_last, l_dim = T.shape
+        # Pad T to shape (new_chi, l)
+        T_padded = torch.zeros(new_chi, l_dim, dtype=T.dtype, device=T.device)
+        T_padded[:r_last, :] = T
+        T = T_padded
+        new_params.append(T)
+
+        # --- Create a new instance ---
+        new_instance = SimpleMPS(
+            N=self.N,
+            chi=new_chi,
+            d=self.d,
+            l=self.l,
+            layers=self.layers,
+            optimize=self.optimize,
+            device=self.device,
+            dtype=self.dtype,
+            seed=self.seed,
+            eps=1e-2  # or use self.mps.eps if stored
+        )
+        
+        # Replace its MPS parameters with our compressed parameters.
+        new_instance.mps.set_params(new_params)
+        new_instance.initialize_MPS()
+
+        print(f"Created a new compressed MPS instance with bond dimension {new_chi}")
+        return new_instance

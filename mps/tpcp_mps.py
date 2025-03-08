@@ -59,6 +59,9 @@ class kraus_operators(nn.Module):
 
     def __getitem__(self, idx):
         return self.kraus_ops[idx]
+    
+    def __len__(self):
+        return len(self.kraus_ops)
 
     def init_params(self, init_with: torch.Tensor | None = None, init_with_identity: bool = False):
         """
@@ -207,6 +210,8 @@ class MPSTPCP(nn.Module):
         # normalize r and W
         r = self.r / (torch.norm(self.r) / np.sqrt(self.r.shape[0]))
 
+        self.rho_list = []
+
 
 
         # self.proj_stiefel(check_on_manifold=True, print_log=True)
@@ -223,6 +228,7 @@ class MPSTPCP(nn.Module):
                 self.K, self.kraus_ops.act_size, self.kraus_ops.act_size
             )
             rho = self.forward_layer(rho, kraus_ops)
+            self.rho_list.append(rho)
 
             if i < self.L - 1:
                 rho, log_sr = self.partial(rho, 0, self.W[i])
@@ -372,6 +378,12 @@ class MPSTPCP(nn.Module):
         # set the maximum element of each row to 1
         self.W.data[:] /= torch.max(self.W.data, dim=1, keepdim=True).values
     
+    def add_W_rate(self, rate: float = 0.01):
+        max_W = torch.max(self.W, dim=1, keepdim=True).values
+        diff = max_W - self.W
+        with torch.no_grad():
+            self.W.data.add_(rate * diff)
+    
     def proj_stiefel(self, check_on_manifold: bool = True, print_log: bool = False, rtol: float = 1e-5):
         """
         Projects the Kraus operators onto the Stiefel manifold
@@ -428,67 +440,74 @@ class MPSTPCP(nn.Module):
         else:
             return Q
 
-    def set_canonical_mps(self, smps: SimpleMPS):
+    def set_canonical_mps(self, smps: SimpleMPS, std: float = 1e-3):
         r"""
-        Convert an existing SimpleMPS (with N sites, chi=d=2) into
-        a sequence of 2-qubit unitaries (one per MPS bond), and store
-        these unitaries as Kraus operators (K=1) in this TPCP model.
+        Convert an existing SimpleMPS (with N sites, chi=2 and d=2) into
+        a sequence of 2-qubit unitaries (one per MPS bond), and store these
+        unitaries as the first block of Kraus operators in this TPCP model.
+        For cases where K >= 2, the first block of each Kraus operator is set
+        to the embedded unitary while the remaining blocks are initialized with
+        independent random matrices drawn from N(0, std^2).
 
-        This closely follows the logic of `_set_canonical_mps` in the
-        HuMPS class, but adapts it for TPCP usage:
-
-        1) call `smps.mps.convert_to_canonical()`,
-        2) build isometries for the interior bonds,
-        3) merge the left boundary and right boundary via einsum & QR,
-        4) reshape each resulting rank-4 tensor (2,2,2,2) into (4,4),
-        5) unitarize via QR,
-        6) copy into self.kraus_ops[l].
-
-        *Assumes* self.K == 1, self.L == N-1, d=2, chi=2, etc.
+        This closely follows the logic of _set_canonical_mps in the HuMPS class,
+        but adapts it for TPCP usage.
+        
+        Args:
+            smps (SimpleMPS): The SimpleMPS object to convert.
+            std (float): Standard deviation for initializing the remaining blocks.
+                        Default is 1e-3.
         """
         # 1) Basic dimension checks
         if smps.N != self.N:
             raise ValueError(f"MPS N={smps.N}, but TPCP N={self.N}.")
         if smps.d != 2 or smps.chi != 2:
-            raise ValueError("This method assumes d=2, chi=2.")
-        if self.K != 1:
-            raise NotImplementedError("Only supports K=1 (unitary channel).")
+            raise ValueError("This method assumes d=2 and chi=2.")
 
-        # 2) Convert the MPS to canonical form
-        #    Typically returns a list of N tensors, e.g. for N=4:
-        #    params[0] ~ (1, 2, 2),  params[-1] ~ (2, 2, 1), middle ones ~ (2, 2, 2).
+        # 2) Convert the MPS to canonical form.
+        #    Expecting a list of N+1 tensors.
         params = smps.mps.convert_to_canonical()
-        if len(params) != self.N + 1: # +1 include for the target state
+        if len(params) != self.N + 1:
             raise RuntimeError(f"Expected {self.N + 1} canonical tensors, got {len(params)}.")
-        
+
+        # 3) Build canonical isometries for the interior bonds.
+        #    Each element in MPS_list is a rank-4 tensor of shape (2,2,2,2).
         MPS_list = [self.embed_isometry(m.clone()) for m in params[1:-1]]
-        uU = torch.einsum("ak,kbcd->abcd",params[0], MPS_list[0])
+        # Merge the left boundary with the first interior tensor.
+        uU = torch.einsum("ak,kbcd->abcd", params[0], MPS_list[0])
         MPS_list[0] = uU.clone()
-        h = params[-1] 
-        # H = h @ h.conj().T
-        # e, V = torch.linalg.eigh(H)
+        # Merge the right boundary.
+        h = params[-1]
         q, r = torch.linalg.qr(h)
         U = MPS_list[-1]
         U = torch.einsum("abcd, de -> abce", U, q)
         MPS_list[-1] = U.clone()
 
+        # 4) For each bond/layer, embed the unitary into the first Kraus block.
+        #    For K >= 2, initialize the remaining blocks with random matrices with given std.
+        act_size = self.d**2  # For d=2, act_size = 4.
         for i in range(self.L):
-            self.kraus_ops[i].data[:] = MPS_list[i].clone().reshape(self.d**2, self.d**2).T
+            # Get current parameter tensor: shape (K * act_size, act_size)
+            kraus_matrix = self.kraus_ops[i].data
+            # Set the first block to the embedded unitary.
+            first_block = MPS_list[i].clone().reshape(act_size, act_size).T
+            kraus_matrix[:act_size, :] = first_block
 
-        assert self.check_point_on_manifold(rtol = 1e-5), "Kraus operators are not on the Stiefel manifold"
+            # For K > 1, initialize the remaining blocks with small random noise.
+            for k in range(1, self.K):
+                start = k * act_size
+                end = (k + 1) * act_size
+                kraus_matrix[start:end, :] = torch.randn(
+                    act_size, act_size, dtype=kraus_matrix.dtype, device=kraus_matrix.device
+                ) * std
 
-        # self.mes.data[:] = r @ self.mes @ r.conj().T
+        # Optionally, ensure the entire Kraus operator remains on the Stiefel manifold.
+        self.proj_stiefel(check_on_manifold=True, print_log=True)
+        assert self.check_point_on_manifold(rtol=1e-5), "Kraus operators are not on the Stiefel manifold"
+
+        # Update 'r' if probabilities are not enabled.
         if not self.with_probs:
             self.r.data[:] = r
 
-        # if use_r:
-        #     self.mes.data[:] = r @ self.mes @ r.conj().T
-        # else:
-        #     # calculate QR 
-        #     q, r = torch.linalg.qr(r)
-        #     unflip = torch.linalg.diagonal(r).sign().add(0.5).sign()
-        #     q *= unflip[..., None, :]
-        #     self.mes.data[:] = q @ self.mes @ q.conj().T
     
     def normalize_w_and_r(self):
         with torch.no_grad():

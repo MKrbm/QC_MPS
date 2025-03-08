@@ -15,12 +15,16 @@ def smps_train(
     N: int,
     d: int = 2,
     l: int = 2,
+    chi: int = 2,
     epochs: int = 10,
     lr: float = 0.01,
     log_steps: int = 10,
+    eps: float = 1e-2,
     dtype: torch.dtype = torch.float64,
     device: torch.device = torch.device("cpu"),
     optimize: str = "greedy",
+    optimizer: type[torch.optim.Optimizer] = torch.optim.Adam,
+    smps: SimpleMPS | None = None
 ) -> SimpleMPS:
     """
     Train a simple MPS (sMPS) model on a given dataloader.
@@ -38,15 +42,18 @@ def smps_train(
       - lr: learning rate.
       - log_steps: number of batches between logging.
       - dtype: torch data type (default torch.float64).
+      - smps: an optional SimpleMPS instance to train.
     
     Returns:
     """
     # Build the sMPS model and its optimizer.
     # --- 1) Train SimpleMPS ---
-    smps = SimpleMPS(N, chi = 2, d = d, l = l, layers=1, device=device, dtype=dtype, optimize=optimize)
+    if smps is None:
+        smps = SimpleMPS(N, chi, d, l, layers=1, device=device, dtype=dtype, optimize=optimize, eps=eps)
+    
     logsoftmax = torch.nn.LogSoftmax(dim=-1)
     nnloss = torch.nn.NLLLoss(reduction="mean")
-    opt_smps = torch.optim.Adam(smps.parameters(), lr=lr)
+    opt_smps = optimizer(smps.parameters(), lr=lr)
     smps_losses = []
     smps.train()
     print(f"\n=== Training SimpleMPS for {epochs} epoch(s)... ===")
@@ -59,6 +66,7 @@ def smps_train(
             data = data.permute(1, 0, 2)  # [batch, N, 2] → [N, batch, 2]
             opt_smps.zero_grad()
             outputs = smps(data)
+            outputs = torch.abs(outputs)
             outputs = logsoftmax(outputs)
             loss = nnloss(outputs, target)
             loss.backward()

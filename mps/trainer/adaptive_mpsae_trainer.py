@@ -142,6 +142,7 @@ def mpsae_adaptive_train(
         N=N,
         d=2,
         l=2,
+        eps=1e-2,
         epochs=mps_epochs,
         lr=mps_lr,
         log_steps=mps_log_steps,
@@ -170,7 +171,7 @@ def mpsae_adaptive_train(
     # Initialize W: start with first column ones and second column small.
     W = torch.zeros(tpcp.L, 2, dtype=torch.float64, device=device)
     W[:, 0] = 1 
-    W[:, 1] = 0.001
+    W[:, 1] = 0.00003
     tpcp.initialize_W(W)
 
     # --- Step 3: Determine lambda_final Using the Initial Loss Value ---
@@ -178,10 +179,11 @@ def mpsae_adaptive_train(
     data_batch, target_batch = data_batch.to(device), target_batch.to(device)
     with torch.no_grad():
         initial_probs, reg = tpcp(data_batch, return_probs=True, return_reg=True)
-        softmax_initial_probs = logsoftmax(initial_probs)
+        # softmax_initial_probs = logsoftmax(initial_probs)
         initial_accuracy = calculate_accuracy(initial_probs[:, 0], target_batch)
         print(f"Initial accuracy: {initial_accuracy.item():.2%}")
-        initial_loss = nnloss(softmax_initial_probs, target_batch)
+        # initial_loss = nnloss(softmax_initial_probs, target_batch)
+        initial_loss = loss_batch(initial_probs[:, 0], target_batch)
         avg_loss = initial_loss.item()
         initial_reg = reg
     print(f"Initial loss for λ determination: {initial_loss.item():.6f}")
@@ -192,12 +194,12 @@ def mpsae_adaptive_train(
 
     # --- Step 4: Scheduler Setup ---
     # Generate target SRPQ list.
-    target_srpq = np.linspace((0.5**2), 1, total_schedule_steps + 1, endpoint=True) ** (1/2)
-    target_srpq[-1] = 0.98
+    target_srpq = np.linspace(0.5, np.exp(-1/N), total_schedule_steps + 1, endpoint=True)
+
     print(f"Generated sqrt target_srpq schedule: {target_srpq}")
 
     # --- Step 5: Main Training Loop Over λ Phases ---
-    metrics = {"loss": [], "accuracy": [], "lambda": [], "srpq": []}
+    metrics = {"loss": [], "accuracy": [], "lambda": [], "srpq": [], "reg": []}
     epoch_total = 0
 
     tpcp.train()
@@ -242,6 +244,7 @@ def mpsae_adaptive_train(
             epoch_acc_sum = 0.0
             epoch_loss_with_reg_sum = 0.0
             epoch_srpq_sum = 0.0
+            epoch_reg_sum = 0.0
             total_samples = 0
             t0 = time.time()
 
@@ -252,8 +255,9 @@ def mpsae_adaptive_train(
                 optimizer_weight.zero_grad()
 
                 outputs, reg = tpcp(data, return_probs=True, return_reg=True)
-                softmax_outputs = logsoftmax(outputs)
-                loss = nnloss(softmax_outputs, target)
+                # softmax_outputs = logsoftmax(outputs)
+                # loss = nnloss(softmax_outputs, target)
+                loss = loss_batch(outputs[:, 0], target)
                 loss_with_reg = loss + current_lambda * reg
                 loss_with_reg.backward()
                 optimizer.step()
@@ -270,6 +274,7 @@ def mpsae_adaptive_train(
                 batch_acc = calculate_accuracy(outputs[:, 0].detach(), target)
                 epoch_acc_sum += batch_acc.item() * bs
                 epoch_srpq_sum += srpq.item() * bs
+                epoch_reg_sum += reg.item() * bs
 
                 if (step + 1) % log_steps == 0 or step == 0:
                     print(
@@ -284,11 +289,12 @@ def mpsae_adaptive_train(
             avg_loss_with_reg = epoch_loss_with_reg_sum / total_samples
             avg_acc = epoch_acc_sum / total_samples
             avg_srpq = epoch_srpq_sum / total_samples
+            avg_reg = epoch_reg_sum / total_samples
             elapsed = time.time() - t0
             print(
                 f"[λ {current_lambda:.6f}] Epoch {phase_epoch+1} | Avg Loss: {avg_loss:.6f} | "
                 f"Avg Loss+Reg: {avg_loss_with_reg:.6f} | Acc: {avg_acc:.2%} | "
-                f"SRPQ: {avg_srpq:.6f} | Time: {elapsed:.2f}s"
+                f"SRPQ: {avg_srpq:.6f} | Reg: {avg_reg:.6f} | Time: {elapsed:.2f}s"
             )
 
             # Record metrics.
@@ -296,6 +302,7 @@ def mpsae_adaptive_train(
             metrics["accuracy"].append(avg_acc)
             metrics["lambda"].append(current_lambda)
             metrics["srpq"].append(avg_srpq)
+            metrics["reg"].append(avg_reg)
 
             # --- Check for convergence ---
             if prev_epoch_loss is not None:
@@ -320,7 +327,7 @@ def mpsae_adaptive_train(
                 break
 
             # If the reg (log of srpq) reaches 1 / N, then stop it.
-            if reg >= 1 / N * 2:
+            if reg < 1 / N * 2:
                 print(f"Reg (log of SRPQ) reached {1 / N:.6f} (current: {reg:.6f}). Ending current phase early.")
                 break
 
@@ -330,6 +337,7 @@ def mpsae_adaptive_train(
 
     # --- Final Update Training: 10 Phases with Training using Loss (without regularization) ---
     tpcp.normalize_w_and_r()
+    print(f"Final update training: {tpcp.W}")
     print("\n=== Starting Final Update Training Phase ===")
     final_update_phases = 10
     # Dictionary to record final update training metrics.
@@ -339,7 +347,9 @@ def mpsae_adaptive_train(
         "epoch_in_phase": [],
         "loss": [],
         "accuracy": [],
-        "W_non_max_avg": []
+        "W_non_max_avg": [],
+        "srpq": [],
+        "reg": []
     }
     overall_update_epoch = 0
     # At the beginning of each phase, recalc the non-max index and delta for each row.
@@ -370,6 +380,8 @@ def mpsae_adaptive_train(
             t0 = time.time()
             epoch_loss_sum = 0.0
             epoch_acc_sum = 0.0
+            epoch_srpq_sum = 0.0
+            epoch_reg_sum = 0.0
             total_samples = 0
 
             # Create new optimizers.
@@ -381,9 +393,10 @@ def mpsae_adaptive_train(
                 optimizer.zero_grad()
                 optimizer_weight.zero_grad()
 
-                outputs, _ = tpcp(data, return_probs=True, return_reg=True)
-                softmax_outputs = logsoftmax(outputs)
-                loss = nnloss(softmax_outputs, target)
+                outputs, reg = tpcp(data, return_probs=True, return_reg=True)
+                # softmax_outputs = logsoftmax(outputs)
+                # loss = nnloss(softmax_outputs, target)
+                loss = loss_batch(outputs[:, 0], target)
                 loss.backward()
                 optimizer.step()
                 optimizer_weight.step()
@@ -394,10 +407,14 @@ def mpsae_adaptive_train(
                 epoch_loss_sum += loss.item() * bs
                 batch_acc = calculate_accuracy(outputs[:, 0].detach(), target)
                 epoch_acc_sum += batch_acc.item() * bs
+                epoch_srpq_sum += torch.exp(-reg).item() * bs
+                epoch_reg_sum += reg.item() * bs
                 total_samples += bs
 
             avg_loss = epoch_loss_sum / total_samples
             avg_acc = epoch_acc_sum / total_samples
+            avg_srpq = epoch_srpq_sum / total_samples
+            avg_reg = epoch_reg_sum / total_samples
             elapsed = time.time() - t0
 
             # Compute average non-max value across rows for reporting.
@@ -406,7 +423,7 @@ def mpsae_adaptive_train(
                 W_non_max_values.append(tpcp.W[i, non_max_idx_list[i]].item())
             avg_W_non_max = sum(W_non_max_values) / len(W_non_max_values)
 
-            print(f"Final update - Phase {phase+1}, Epoch {epoch+1}: Loss: {avg_loss:.6f}, Accuracy: {avg_acc:.2%}, Avg W non-max: {avg_W_non_max:.6f}, Time: {elapsed:.2f}s")
+            print(f"Final update - Phase {phase+1}, Epoch {epoch+1}: Loss: {avg_loss:.6f}, Accuracy: {avg_acc:.2%}, Avg W non-max: {avg_W_non_max:.6f}, SRPQ: {avg_srpq:.6f}, Reg: {avg_reg:.6f}, Time: {elapsed:.2f}s")
 
             final_update_metrics["update_epoch"].append(overall_update_epoch + 1)
             final_update_metrics["phase"].append(phase + 1)
@@ -414,6 +431,8 @@ def mpsae_adaptive_train(
             final_update_metrics["loss"].append(avg_loss)
             final_update_metrics["accuracy"].append(avg_acc)
             final_update_metrics["W_non_max_avg"].append(avg_W_non_max)
+            final_update_metrics["srpq"].append(avg_srpq)
+            final_update_metrics["reg"].append(avg_reg)
             overall_update_epoch += 1
 
         # After training in this phase, update the non-max entries in tpcp.W.

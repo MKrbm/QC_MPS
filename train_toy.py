@@ -44,7 +44,7 @@ python train_toy.py \
 import argparse
 import torch
 import numpy as np
-from mps.trainer.data_utils import SyntheticDataset
+from mps.trainer.data_utils import SyntheticDatasetV3
 from mps.trainer.model_trainer import run_training
 
 def main():
@@ -74,7 +74,7 @@ def main():
     print(f"Using device: {device}")
 
     # Create a MNIST DataLoader for digits 0 and 1.
-    dataset = SyntheticDataset(n=args.N, num_samples=args.num_data or 1000, seed=args.seed)
+    dataset = SyntheticDatasetV3(n=args.N, num_samples=args.num_data or 1000, seed=args.seed)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=128, shuffle=True)
 
     # Delegate the model-specific training (parsing its arguments) to the separate module.
