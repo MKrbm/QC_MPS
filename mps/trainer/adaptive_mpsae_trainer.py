@@ -194,7 +194,7 @@ def mpsae_adaptive_train(
 
     # --- Step 4: Scheduler Setup ---
     # Generate target SRPQ list.
-    target_srpq = np.linspace(0.5, np.exp(-1/N), total_schedule_steps + 1, endpoint=True)
+    target_srpq = np.linspace(0.5, 0.97, total_schedule_steps + 1, endpoint=True)
 
     print(f"Generated sqrt target_srpq schedule: {target_srpq}")
 

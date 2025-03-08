@@ -5,7 +5,7 @@
 #SBATCH --partition=cpu               # Partition (queue) name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks=1                    # Number of tasks (processes)
-#SBATCH --cpus-per-task=30             # Number of CPUs per task
+#SBATCH --cpus-per-task=128             # Number of CPUs per task
 #SBATCH --time=24:00:00               # Time limit hrs:min:sec
 
 working_dir=/home/keisuke/QC_MPS

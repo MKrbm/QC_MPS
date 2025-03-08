@@ -153,6 +153,19 @@ def run_training(mnist_args, remaining_args, dataloader, N):
     # Set device.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    import os
+    import multiprocessing
+
+    try:
+        # This returns a set of CPU IDs that the process can run on.
+        available_cpus = len(os.sched_getaffinity(0))
+        print(f"CPUs available to this process: {available_cpus}")
+    except AttributeError:
+        # Fallback in case os.sched_getaffinity is not available (e.g., on non-Linux platforms).
+        available_cpus = multiprocessing.cpu_count()
+        print(f"CPUs available to this process: {available_cpus}")
+
+
     # Call the appropriate training function based on the selected model.
     if model_args.model == "tpcp":
         _ = tpcp_train(
