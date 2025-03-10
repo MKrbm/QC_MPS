@@ -1,4 +1,3 @@
-
 import opt_einsum as oe
 import torch
 from torch import nn
@@ -89,40 +88,134 @@ class MPS(nn.Module):
         self.device = device
         self.dtype = dtype
 
+        # mps_shapes for the left, middle, and right cores:
+        # First core: (d, chi_max)
+        # Middle cores: (chi_max, d, chi_max)
+        # Last core: (chi_max, d)
+        self.mps_shapes = [(self.d, self.chi_max)] \
+                          + [(self.chi_max, self.d, self.chi_max)] * (self.N - 1) \
+                          + [(self.chi_max, self.d)]
+
         self.initialize_params(std=eps)
     
-    def initialize_params(self, std = 1e-2):
-
-        self.mps_shapes = [(self.d, self.chi_max)] + [(self.chi_max, self.d, self.chi_max)] * (self.N - 1) + [(self.chi_max, self.d)]
-
+    def initialize_params(self, std=1e-2):
         MPS_list = []
         for i in range(len(self.mps_shapes)):
             if i == 0:
+                # left-most core: shape (d, chi_max)
                 core = torch.zeros(self.mps_shapes[i], dtype=self.dtype)
                 core[:, 0] = 1
                 core += torch.normal(mean=0.0, std=std, size=core.shape)
-            elif i == len(self.mps_shapes)-1:
+            elif i == len(self.mps_shapes) - 1:
+                # right-most core: shape (chi_max, d)
                 core = torch.zeros(self.mps_shapes[i], dtype=self.dtype)
                 core[0] = 1
                 core += torch.normal(mean=0.0, std=std, size=core.shape)
             else:
+                # middle cores: shape (chi_max, d, chi_max)
                 core = torch.stack([torch.eye(self.chi_max, dtype=self.dtype)] * self.d).permute(1, 0, 2)
                 core += torch.normal(mean=0.0, std=std, size=core.shape)
             MPS_list.append(core)
-
-        self.params = nn.ParameterList([
-            nn.Parameter(mps) for mps in MPS_list
-        ])
-    def convert_to_canonical(self):
+        
+        self.params = nn.ParameterList([nn.Parameter(mps) for mps in MPS_list])
+    
+    def get_canonical_form(self):
+        """
+        Convert the list of MPS cores (in numpy format) to a canonical form
+        using successive SVD decompositions.
+        
+        The algorithm follows these steps:
+            1. Reshape the first core to (1, d, chi_max)
+            2. For each site (except the last):
+               - Reshape the current block A to a matrix.
+               - Perform SVD.
+               - Normalize the singular values.
+               - Reshape U back to a tensor and store it.
+               - Contract R with the next core using einsum.
+            3. Process the final core using the accumulated R.
+            4. Reshape the first core back to (d, chi_max).
+        
+        Returns:
+            new_MPS_list: list of numpy arrays in canonical form.
+        """
+        d = self.d
+        chi_max = self.chi_max
         MPS_list = [core.detach().cpu().numpy() for core in self.params]
 
-        MPS_list[0] = MPS_list[0].reshape(1, 2, 2)
-        MPS_list[-1] = MPS_list[-1].reshape(2, 2, 1)
-        mpstate = tn.FiniteMPS(MPS_list, canonicalize=True, center_position=len(MPS_list)-1)
-        return [torch.tensor(t, dtype=self.dtype).reshape(s) for t, s in zip(mpstate.tensors, self.mps_shapes)]
-    
+        # Work on a copy so that the original is preserved.
+        MPS_list = [np.copy(core) for core in MPS_list]
+        # Reshape the first core: from (d, chi_max) -> (1, d, chi_max)
+        MPS_list[0] = MPS_list[0].reshape(1, d, chi_max)
+        new_MPS_list = [np.zeros(core.shape) for core in MPS_list]
+
+        # Initialize A as the first core
+        A = np.copy(MPS_list[0])
+        
+        for i in range(len(MPS_list) - 1):
+            shapeA = A.shape
+            # Reshape A to merge the left indices with the physical index.
+            A = A.reshape(A.shape[0] * d, -1)
+            
+            # Perform SVD
+            U, S, V = np.linalg.svd(A, full_matrices=False)
+            
+            print(S)
+            # Normalize S (ensuring the normalization remains consistent)
+            S = S / np.linalg.norm(S)
+
+            
+            # Update chi (could be truncated if needed)
+            chi_new = len(S)
+            # Form the matrix R = diag(S) * V[:chi_new]
+            R = np.diag(S) @ V[:chi_new]
+            
+            # Reshape U back to the tensor shape of the current core.
+            At = U.reshape(shapeA[0], shapeA[1], -1)
+            new_MPS_list[i][:At.shape[0], :At.shape[1], :At.shape[2]] = At
+            
+            if i < len(MPS_list) - 2:
+                # Contract R with the next core.
+                A = np.copy(MPS_list[i+1])
+                A = np.einsum("ij, jdk->idk", R, A)
+        
+        # Process the final core.
+        Af = np.copy(MPS_list[-1])
+        Af = R @ Af
+        new_MPS_list[-1][:] = Af
+        
+        # Reshape the first core back to its original shape: (d, chi_max)
+        new_MPS_list[0] = new_MPS_list[0].reshape(d, chi_max)
+        
+        return new_MPS_list
+
+    def convert_to_canonical(self):
+        """
+        Convert the current MPS parameters to their canonical form.
+        This function:
+            1. Extracts the parameters as numpy arrays.
+            2. Calls get_canonical_form to perform the SVD-based canonicalization.
+            3. Converts the canonical numpy arrays back into torch tensors.
+        
+        Returns:
+            new_MPS_list_tensor: list of torch tensors in canonical form.
+        """
+        # Extract parameters to a list of numpy arrays.
+        
+        # Get the canonical form using the static method.
+        new_MPS_list_np = self.get_canonical_form()
+        
+        # Convert the canonical numpy cores back to torch tensors.
+        new_MPS_list_tensor = [
+            torch.tensor(core, dtype=self.dtype, device=self.device)
+            for core in new_MPS_list_np
+        ]
+        
+        self.set_params(new_MPS_list_tensor)
+
     def set_params(self, params: list[torch.Tensor]):
-        assert len(params) == len(self.params), "Number of parameters must match, but got {} and {}".format(len(params), len(self.params))
+        assert len(params) == len(self.params), (
+            f"Number of parameters must match, but got {len(params)} and {len(self.params)}"
+        )
         for i, param in enumerate(params):
             self.params[i].data[:] = param
 
@@ -257,7 +350,7 @@ class SimpleMPS(nn.Module):
             self.ops[self.left_qubit_inds[i]] = X[i]
         # measurement qubits
         return torch.abs(oe.contract(self.estr_mps, *self.ops, backend="torch", optimize=self.path))
-
+    
     def compressed(self, new_chi: int):
         """
         Create a new instance of SimpleMPS with compressed (lower bond dimension)
@@ -360,3 +453,37 @@ class SimpleMPS(nn.Module):
 
         print(f"Created a new compressed MPS instance with bond dimension {new_chi}")
         return new_instance
+
+    def rescale(self):
+        """
+        Rescales the MPS parameters to normalize the output magnitude.
+        This is done by:
+        1. Creating a normalized random test state
+        2. Computing the system scale from MPS output
+        3. Calculating the per-site scaling factor
+        4. Rescaling all MPS parameters
+        
+        Returns:
+            float: The original system scale before rescaling
+        """
+        # Create and normalize test state
+        x = torch.randn(self.N, 2, dtype=self.mps.dtype, device=self.device)
+        x = torch.abs(x)
+        x = x / x.sum(dim=1).unsqueeze(1)
+        
+        # Calculate system scale
+        out = self(x.reshape(self.N, 1, 2))
+        sys_scale = torch.abs(out).sum().item()
+        
+        # Calculate per-site scaling factor
+        s = sys_scale ** (1 / self.N)
+        
+        # Rescale parameters
+        params = self.mps.params
+        params_rescaled = [p.detach().clone() / s for p in params]
+        
+        # Update parameters
+        self.mps.set_params(params_rescaled)
+        self.initialize_MPS()
+        
+        return sys_scale

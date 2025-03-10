@@ -70,6 +70,14 @@ def smps_train(
             outputs = logsoftmax(outputs)
             loss = nnloss(outputs, target)
             loss.backward()
+            
+            # Print the norm of the gradients for 10 equally split indices
+            params = list(smps.parameters())
+            num_params = len(params)
+            indices = [int(i * num_params / 10) for i in range(10)]
+            grad_norms = [f"Gradient norm for parameter {idx}: {params[idx].grad.norm().item():.6f}" for idx in indices if params[idx].grad is not None]
+            print(" | ".join(grad_norms))
+            
             opt_smps.step()
             bs = target.size(0)
             total_loss += loss.item() * bs
