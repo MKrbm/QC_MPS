@@ -210,7 +210,7 @@ class MPSTPCP(nn.Module):
         # normalize r and W
         r = self.r / (torch.norm(self.r) / np.sqrt(self.r.shape[0]))
 
-        self.rho_list = []
+        # self.rho_list = []
 
 
 
@@ -228,7 +228,7 @@ class MPSTPCP(nn.Module):
                 self.K, self.kraus_ops.act_size, self.kraus_ops.act_size
             )
             rho = self.forward_layer(rho, kraus_ops)
-            self.rho_list.append(rho)
+            # self.rho_list.append(rho)
 
             if i < self.L - 1:
                 rho, log_sr = self.partial(rho, 0, self.W[i])
@@ -240,7 +240,7 @@ class MPSTPCP(nn.Module):
         rho_out, log_sr = self.partial(rho, 0, self.W[self.L - 1])
         log_sr_list.append(log_sr.mean())
 
-        self.rho_last = rho_out.detach().clone()
+        # self.rho_last = rho_out.detach().clone()
 
         log_sr_pq = sum(log_sr_list) / len(log_sr_list)
 
@@ -361,9 +361,11 @@ class MPSTPCP(nn.Module):
             reduced = reduced.reshape(batch_size, self.d, self.d)
         else:
             raise ValueError("site must be 0 or 1 for a 2-qubit system.")
+        
 
         # print(reduced.shape)
         success_rate = torch.einsum("nii->n", reduced)
+        self.reduced = torch.einsum("abcb->ac",rho_reshaped[0])
         return reduced / success_rate.unsqueeze(-1).unsqueeze(-1), -torch.log(success_rate)
 
     def initialize_W(self, init_with: torch.Tensor | None = None, random_init: bool = False):
@@ -465,7 +467,7 @@ class MPSTPCP(nn.Module):
 
         # 2) Convert the MPS to canonical form.
         #    Expecting a list of N+1 tensors.
-        params = smps.mps.convert_to_canonical()
+        params = smps.mps.get_canonical_form_v2()
         if len(params) != self.N + 1:
             raise RuntimeError(f"Expected {self.N + 1} canonical tensors, got {len(params)}.")
 

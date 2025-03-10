@@ -187,6 +187,14 @@ class MPS(nn.Module):
         
         return new_MPS_list
 
+    def get_canonical_form_v2(self):
+        MPS_list = [core.detach().cpu().numpy() for core in self.params]
+
+        MPS_list[0] = MPS_list[0].reshape(1, 2, 2)
+        MPS_list[-1] = MPS_list[-1].reshape(2, 2, 1)
+        mpstate = tn.FiniteMPS(MPS_list, canonicalize=True, center_position=len(MPS_list)-1)
+        return [torch.tensor(t, dtype=self.dtype).reshape(s) for t, s in zip(mpstate.tensors, self.mps_shapes)]
+
     def convert_to_canonical(self):
         """
         Convert the current MPS parameters to their canonical form.
