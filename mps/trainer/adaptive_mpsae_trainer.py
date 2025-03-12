@@ -142,7 +142,7 @@ def mpsae_adaptive_train(
         N=N,
         d=2,
         l=2,
-        eps=1e-2,
+        eps=1 / np.sqrt(N) * 0.1,
         epochs=mps_epochs,
         lr=mps_lr,
         log_steps=mps_log_steps,
