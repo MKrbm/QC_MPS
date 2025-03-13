@@ -6,27 +6,66 @@ Common utility functions for training.
 import torch
 import matplotlib.pyplot as plt
 
-def loss_batch(outputs, labels):
-    """
-    Computes a binary cross-entropy–style loss for a batch of outputs and labels.
 
-    For each sample in the batch:
-    - If the label is 0, the loss is computed as -log(output).
-    - If the label is 1, the loss is computed as -log(1 - output).
+def loss_batch(probs, targets, alpha=0.5, gamma=0.0, reduction='mean'):
+    """
+    Focal loss for binary classification with probabilities as input.
+    
+    Args:
+        probs (Tensor): shape (N, 2), row i is [p_class0, p_class1].
+        targets (Tensor): shape (N, ), each value in {0,1}.
+        alpha (float): Weight for the positive class (class=1). 
+                       The weight for class=0 becomes (1 - alpha).
+        gamma (float): The focusing parameter.
+        reduction (str): 'mean', 'sum', or 'none' for output reduction.
+        
+    Returns:
+        Tensor: scalar (if mean or sum) or per-sample (if 'none') focal loss.
+    """
+    # Ensure targets is a LongTensor (for indexing)
+    targets = targets.long()
+
+    # p_t: probability assigned to the correct class for each sample
+    # p_t[i] = probs[i, targets[i]]
+    p_t = probs[torch.arange(len(probs)), targets]
+
+    # alpha_t: weight is alpha for class=1, and (1-alpha) for class=0
+    alpha_t = alpha * (targets == 1).float() + (1 - alpha) * (targets == 0).float()
+
+    # focal factor = (1 - p_t)^gamma
+    focal_factor = (1 - p_t) ** gamma
+
+    # compute the focal loss (add a small epsilon to avoid log(0))
+    loss = -alpha_t * focal_factor * torch.log(p_t + 1e-8)
+
+    # reduction
+    if reduction == 'mean':
+        return loss.mean()
+    elif reduction == 'sum':
+        return loss.sum()
+    else:
+        return loss  # 'none'
+
+
+
+def mean_risk(outputs, labels):
+    """
+    Computes the mean risk for a batch of outputs and labels.
+
+    The risk is defined as the absolute difference between the predicted probability
+    and the true label.
 
     Args:
-        outputs (torch.Tensor): The predicted probabilities for each sample.
-        labels (torch.Tensor): The true labels for each sample (0 or 1).
+        outputs (torch.Tensor): The predicted probabilities for each sample (N x 2).
+        labels (torch.Tensor): The true labels for each sample (N).
 
     Returns:
-        torch.Tensor: The average loss over the batch.
+        torch.Tensor: The mean risk over the batch.
     """
-    device = outputs.device
-    loss_val = torch.zeros(1, device=device, dtype=outputs.dtype)
-    for i in range(len(outputs)):
-        prob = outputs[i] if labels[i] == 0 else (1 - outputs[i])
-        loss_val -= torch.log(prob + 1e-8)
-    return loss_val / len(outputs)
+    # Select the predicted probabilities corresponding to the true labels
+    predicted_probs = outputs[torch.arange(outputs.size(0)), labels]
+    risk = torch.abs(predicted_probs - 1)
+    return risk.mean()
 
 def calculate_accuracy(outputs, labels):
     """
