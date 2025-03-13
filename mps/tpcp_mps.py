@@ -507,8 +507,8 @@ class MPSTPCP(nn.Module):
         assert self.check_point_on_manifold(rtol=1e-5), "Kraus operators are not on the Stiefel manifold"
 
         # Update 'r' if probabilities are not enabled.
-        if not self.with_probs:
-            self.r.data[:] = r
+        # if not self.with_probs:
+        self.r.data[:] = r
 
     
     def normalize_w_and_r(self):

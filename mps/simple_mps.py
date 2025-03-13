@@ -104,12 +104,13 @@ class MPS(nn.Module):
             if i == 0:
                 # left-most core: shape (d, chi_max)
                 core = torch.zeros(self.mps_shapes[i], dtype=self.dtype)
-                core[:] = 1
+                core[0,:] = 1
                 # core[:] = torch.eye(self.d, dtype=self.dtype)
                 core += torch.normal(mean=0.0, std=std, size=core.shape)
             elif i == len(self.mps_shapes) - 1:
                 # right-most core: shape (chi_max, d)
                 core = torch.zeros(self.mps_shapes[i], dtype=self.dtype)
+                core[:, 0] = 1
                 core[:] = torch.eye(self.chi_max, dtype=self.dtype)
                 # core += torch.normal(mean=0.0, std=std, size=core.shape)
             else:
