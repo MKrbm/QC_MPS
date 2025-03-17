@@ -7,7 +7,7 @@ Defines the smps_train() function.
 import time
 import torch
 from mps.simple_mps import SimpleMPS
-from mps.trainer.utils import plot_training_metrics, loss_batch, calculate_accuracy
+from mps.trainer.utils import plot_training_metrics, focal_loss, calculate_accuracy
 
 
 def smps_train(

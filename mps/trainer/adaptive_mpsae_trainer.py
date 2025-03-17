@@ -30,7 +30,7 @@ import pandas as pd
 # Import required functions and modules from the MPS package.
 from mps import tpcp_mps  # contains MPSTPCP and regularize_weight
 from mps.trainer import utils
-from mps.trainer.utils import loss_batch, calculate_accuracy  # assumed to be defined
+from mps.trainer.utils import focal_loss, calculate_accuracy  # assumed to be defined
 from mps.StiefelOptimizers import StiefelAdam
 from mps.radam import RiemannianAdam
 from mps.trainer.smps_trainer import smps_train
@@ -183,7 +183,7 @@ def mpsae_adaptive_train(
         initial_accuracy = calculate_accuracy(initial_probs[:, 0], target_batch)
         print(f"Initial accuracy: {initial_accuracy.item():.2%}")
         # initial_loss = nnloss(softmax_initial_probs, target_batch)
-        initial_loss = loss_batch(initial_probs[:, 0], target_batch)
+        initial_loss = focal_loss(initial_probs[:, 0], target_batch)
         avg_loss = initial_loss.item()
         initial_reg = reg
     print(f"Initial loss for λ determination: {initial_loss.item():.6f}")
@@ -257,7 +257,7 @@ def mpsae_adaptive_train(
                 outputs, reg = tpcp(data, return_probs=True, return_reg=True)
                 # softmax_outputs = logsoftmax(outputs)
                 # loss = nnloss(softmax_outputs, target)
-                loss = loss_batch(outputs[:, 0], target)
+                loss = focal_loss(outputs[:, 0], target)
                 loss_with_reg = loss + current_lambda * reg
                 loss_with_reg.backward()
                 optimizer.step()
@@ -396,7 +396,7 @@ def mpsae_adaptive_train(
                 outputs, reg = tpcp(data, return_probs=True, return_reg=True)
                 # softmax_outputs = logsoftmax(outputs)
                 # loss = nnloss(softmax_outputs, target)
-                loss = loss_batch(outputs[:, 0], target)
+                loss = focal_loss(outputs[:, 0], target)
                 loss.backward()
                 optimizer.step()
                 optimizer_weight.step()

@@ -17,7 +17,7 @@ from mps.StiefelOptimizers import StiefelAdam, StiefelSGD
 from mps.radam import RiemannianAdam
 
 # Import common utilities.
-from mps.trainer.utils import loss_batch, calculate_accuracy, to_probs, plot_training_metrics
+from mps.trainer.utils import focal_loss, calculate_accuracy, to_probs, plot_training_metrics
 from mps.trainer.smps_trainer import smps_train
 
 def mpsae_train(
@@ -129,7 +129,7 @@ def mpsae_train(
                 bs = target.size(0)
                 opt_tpcp.zero_grad()
                 outputs = tpcp(data)
-                loss_val = loss_batch(outputs, target)
+                loss_val = focal_loss(outputs, target)
                 loss_val.backward()
                 opt_tpcp.step()
                 weight_optimizer.step()

@@ -7,7 +7,7 @@ import torch
 import matplotlib.pyplot as plt
 
 
-def loss_batch(probs, targets, alpha=0.5, gamma=0.0, reduction='mean'):
+def focal_loss(probs, targets, alpha=0.5, gamma=0.0, reduction='mean'):
     """
     Focal loss for binary classification with probabilities as input.
     

@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt  # Ensure matplotlib is imported
 
 from mps import umps
 from mps import unitary_optimizer
-from mps.trainer.utils import plot_training_metrics, loss_batch, calculate_accuracy, plot_gradient_norms
+from mps.trainer.utils import plot_training_metrics, focal_loss, calculate_accuracy, plot_gradient_norms
 
 def umps_bp_train(
     dataloader,
@@ -77,7 +77,7 @@ def umps_bp_train(
             
             optimizer.zero_grad()
             outputs = model(data)  # forward pass
-            batch_loss = loss_batch(outputs, target)
+            batch_loss = focal_loss(outputs, target)
             batch_loss.backward()
             
             # --- Record gradient norms for specific qubits ---

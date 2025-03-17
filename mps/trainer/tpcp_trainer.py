@@ -12,7 +12,7 @@ from mps.tpcp_mps import MPSTPCP, ManifoldType
 from mps.StiefelOptimizers import StiefelAdam, StiefelSGD
 from mps.radam import RiemannianAdam
 
-from mps.trainer.utils import loss_batch, calculate_accuracy, plot_training_metrics
+from mps.trainer.utils import focal_loss, calculate_accuracy, plot_training_metrics
 
 def tpcp_train(
     dataloader,
@@ -80,7 +80,7 @@ def tpcp_train(
             data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
             outputs = model(data)
-            batch_loss = loss_batch(outputs, target)
+            batch_loss = focal_loss(outputs, target)
             batch_loss.backward()
             optimizer.step()
             model.proj_stiefel(check_on_manifold=True, print_log=False, rtol=1e-3)

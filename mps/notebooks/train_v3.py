@@ -31,7 +31,7 @@ smps.mps.set_params(smps_params)
 smps.initialize_MPS()
 
 from mps import tpcp_mps
-from mps.trainer.utils import calculate_accuracy, loss_batch
+from mps.trainer.utils import calculate_accuracy, focal_loss
 
 # --- Step 2: Build and Prepare TPCP ---
 tpcp = tpcp_mps.MPSTPCP(
@@ -65,7 +65,7 @@ initial_probs, reg = tpcp(data_batch, return_probs=True, return_reg=True)
 initial_accuracy = calculate_accuracy(initial_probs[:, 0], target_batch)
 print(f"Initial accuracy: {initial_accuracy.item():.2%}")
 
-loss = loss_batch(initial_probs[:, 0], target_batch)
+loss = focal_loss(initial_probs[:, 0], target_batch)
 print(f"Initial loss: {loss.item()}")
 
 # from mps.trainer.adaptive_mpsae_trainer import RiemannianAdam
@@ -88,7 +88,7 @@ for _ in range(epochs):
         outputs, reg = tpcp(data, return_probs=True, return_reg=True)
         # probs = logsoftmax(outputs)
         # loss0 = nnloss(probs, target)
-        loss0 = loss_batch(outputs[:, 0], target)
+        loss0 = focal_loss(outputs[:, 0], target)
         loss = loss0  + clambda * reg
 
         loss.backward()
