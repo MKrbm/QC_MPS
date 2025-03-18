@@ -240,7 +240,7 @@ class MPSTPCP(nn.Module):
         rho_out, log_sr = self.partial(rho, 0, self.W[self.L - 1])
         log_sr_list.append(log_sr.mean())
 
-        # self.rho_last = rho_out.detach().clone()
+        self.rho_last = rho_out.detach().clone()
 
         log_sr_pq = sum(log_sr_list) / len(log_sr_list)
 

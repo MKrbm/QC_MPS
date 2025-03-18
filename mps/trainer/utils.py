@@ -24,6 +24,8 @@ def focal_loss(probs, targets, alpha=0.5, gamma=0.0, reduction='mean'):
     """
     # Ensure targets is a LongTensor (for indexing)
     targets = targets.long()
+    if probs.dim() == 1:
+        probs = torch.stack([probs, 1 - probs], dim=1)
 
     # p_t: probability assigned to the correct class for each sample
     # p_t[i] = probs[i, targets[i]]
