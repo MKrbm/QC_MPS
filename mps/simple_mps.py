@@ -109,8 +109,9 @@ class MPS(nn.Module):
             elif i == len(self.mps_shapes) - 1:
                 # right-most core: shape (chi_max, d)
                 core = torch.zeros(self.mps_shapes[i], dtype=self.dtype)
-                core[:] = torch.eye(self.chi_max, dtype=self.dtype)
-                # core += torch.normal(mean=0.0, std=std, size=core.shape)
+                min_dim = min(self.chi_max, self.d)
+                core[:min_dim, :min_dim] = torch.eye(min_dim, dtype=self.dtype)
+                core += torch.normal(mean=0.0, std=std, size=core.shape)
             else:
                 # middle cores: shape (chi_max, d, chi_max)
                 core = torch.stack([torch.eye(self.chi_max, dtype=self.dtype)] * self.d).permute(1, 0, 2)
