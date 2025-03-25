@@ -28,7 +28,8 @@ class kraus_operators(nn.Module):
                 L, 
                 with_identity: bool = False, 
                 init_with: torch.Tensor | None = None, 
-                manifold: ManifoldType = ManifoldType.CANONICAL):
+                manifold: ManifoldType = ManifoldType.CANONICAL,
+                dtype: torch.dtype = torch.float64):
         super().__init__()
 
         if manifold not in ManifoldType:
@@ -37,6 +38,7 @@ class kraus_operators(nn.Module):
         self.K = K
         self.L = L
         self.act_size = self.d ** self.n
+        self.dtype = dtype
         # self.manifold = geoopt.Stiefel(canonical = (manifold == ManifoldType.CANONICAL))
         if manifold == ManifoldType.EXACT:
             self.manifold = geoopt.EuclideanStiefelExact()
@@ -50,7 +52,7 @@ class kraus_operators(nn.Module):
         # Each parameter is now defined as a Geoopt ManifoldParameter on the Stiefel manifold.
         self.kraus_ops = nn.ParameterList(
             [geoopt.ManifoldParameter(
-                torch.zeros(self.K * self.act_size, self.act_size, dtype=torch.float64),
+                torch.zeros(self.K * self.act_size, self.act_size, dtype=self.dtype),
                 manifold=self.manifold,
                 requires_grad=True
             ) for _ in range(self.L)]
@@ -89,14 +91,14 @@ class kraus_operators(nn.Module):
             for l in range(self.L):
                 if init_with_identity:
                     # Create identity Kraus operators normalized by 1/sqrt(K)
-                    identity = torch.eye(self.act_size, dtype=torch.float64, device=self.kraus_ops[l].device)
+                    identity = torch.eye(self.act_size, dtype=self.dtype, device=self.kraus_ops[l].device)
                     kraus_identity = (1.0 / np.sqrt(self.K)) * identity
                     param_val = torch.stack([kraus_identity for _ in range(self.K)]).reshape(self.K * self.act_size, self.act_size)
                 else:
                     # Use geoopt's Stiefel manifold random generator.
                     param_val = stiefel.random(
                         (self.K * self.act_size, self.act_size),
-                        dtype=torch.float64,
+                        dtype=self.dtype,
                         device=self.kraus_ops[l].device
                     )
                 self.kraus_ops[l].data.copy_(param_val)
@@ -172,7 +174,8 @@ class MPSTPCP(nn.Module):
         d=2, 
         enable_r: bool = True,
         with_identity: bool = False, 
-        manifold: ManifoldType = ManifoldType.CANONICAL
+        manifold: ManifoldType = ManifoldType.CANONICAL,
+        dtype: torch.dtype = torch.float64
     ):
         """
         Args:
@@ -186,14 +189,15 @@ class MPSTPCP(nn.Module):
         self.d = d  # single-qubit dimension (d=2)
         self.with_probs = enable_r
         self.L = N - 1
+        self.dtype = dtype
 
-        self.kraus_ops = kraus_operators(K, L=self.L, with_identity=with_identity, manifold=manifold)
+        self.kraus_ops = kraus_operators(K, L=self.L, with_identity=with_identity, manifold=manifold, dtype=dtype)
         self.manifold = self.kraus_ops.manifold
 
-        self.r = nn.Parameter(torch.eye(self.d, dtype=torch.float64, device=self.kraus_ops[0].device, requires_grad=True))
+        self.r = nn.Parameter(torch.eye(self.d, dtype=self.dtype, device=self.kraus_ops[0].device, requires_grad=True))
 
-        self.pros0 = torch.tensor([[1, 0], [0, 0]], dtype=torch.float64, device=self.kraus_ops[0].device)
-        self.pros1 = torch.tensor([[0, 0], [0, 1]], dtype=torch.float64, device=self.kraus_ops[0].device)
+        self.pros0 = torch.tensor([[1, 0], [0, 0]], dtype=self.dtype, device=self.kraus_ops[0].device)
+        self.pros1 = torch.tensor([[0, 0], [0, 1]], dtype=self.dtype, device=self.kraus_ops[0].device)
 
         self.initialize_W(random_init=False)
 
@@ -207,14 +211,7 @@ class MPSTPCP(nn.Module):
             X = X / torch.norm(X, dim=-1).unsqueeze(-1)
         
 
-        # normalize r and W
         r = self.r / (torch.norm(self.r) / np.sqrt(self.r.shape[0]))
-
-        # self.rho_list = []
-
-
-
-        # self.proj_stiefel(check_on_manifold=True, print_log=True)
 
         batch_size = X.shape[0]
         rho1 = self.get_rho(X[:, 0])
@@ -240,7 +237,7 @@ class MPSTPCP(nn.Module):
         rho_out, log_sr = self.partial(rho, 0, self.W[self.L - 1])
         log_sr_list.append(log_sr.mean())
 
-        self.rho_last = rho_out.detach().clone()
+        self.rho_last = rho_out
 
         log_sr_pq = sum(log_sr_list) / len(log_sr_list)
 
@@ -250,7 +247,7 @@ class MPSTPCP(nn.Module):
 
         mes1 = r @ self.pros1 @ r.T.conj()
         mes1_result = torch.einsum("ij,...ji->...", mes1, rho_out)
-        outputs = torch.stack([mes0_result, mes1_result], dim=-1)
+        outputs = torch.stack([mes0_result.real, mes1_result.real], dim=-1)
         probs = self._to_probs(outputs)
         if return_probs:
             return probs if not return_reg else (probs, log_sr_pq)
@@ -333,6 +330,8 @@ class MPSTPCP(nn.Module):
         # set the maximum element of each row to 1
         weight_prob = torch.abs(weight)
         weight_prob = weight_prob / torch.max(weight_prob)
+        if rho.dtype == torch.complex128:
+            weight_prob = torch.complex(weight_prob, torch.zeros_like(weight_prob))
         # assert np.isclose(np.linalg.norm(weight.detach().cpu().numpy()), 1.0, atol=1e-10), f"weight must sum to 1, got {weight}"
 
         # Reshape => (batch_size, d, d, d, d)
@@ -366,7 +365,7 @@ class MPSTPCP(nn.Module):
         # print(reduced.shape)
         success_rate = torch.einsum("nii->n", reduced)
         self.reduced = torch.einsum("abcb->ac",rho_reshaped[0])
-        return reduced / success_rate.unsqueeze(-1).unsqueeze(-1), -torch.log(success_rate)
+        return reduced / success_rate.unsqueeze(-1).unsqueeze(-1), -torch.log(success_rate.real)
 
     def initialize_W(self, init_with: torch.Tensor | None = None, random_init: bool = False):
         if init_with is not None:
@@ -568,8 +567,3 @@ def regularize_weight(w, p = 4):
     w_p = w**p
 
     return w_p.sum(dim=1).mean() - 1/2
-    
-    
-    
-    
-    
