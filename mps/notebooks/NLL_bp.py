@@ -9,6 +9,7 @@ from mps import tpcp_mps
 
 import mps
 from mps.trainer.utils import focal_loss
+from mps.radam import RiemannianAdam
 import geoopt
 import random
 import pandas as pd
@@ -35,7 +36,7 @@ def grad_NLL(N, batch_size, dtype, lr, epochs):
     )
     tpcp.train()
 
-    optimizer = geoopt.optim.RiemannianSGD(tpcp.kraus_ops.parameters(), lr=lr)
+    optimizer = RiemannianAdam(tpcp.kraus_ops.parameters(), lr=lr)
     
     res = {
         "grad_first": [],
